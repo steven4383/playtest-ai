@@ -1,0 +1,33 @@
+/*
+ * Everything else is Chakra UI (theme.ts). Only the hand-drawn SVG sparkline and the
+ * log viewer keep a few rules here, using Chakra's CSS variables so they follow light/dark.
+ */
+:root {
+  --series-1: var(--chakra-colors-series-1);
+  --series-2: var(--chakra-colors-series-2);
+  --series-3: var(--chakra-colors-series-3);
+}
+
+.spark { position: relative; }
+.spark svg { display: block; width: 100%; height: auto; overflow: visible; cursor: crosshair; }
+.spark .grid { stroke: var(--chakra-colors-border); stroke-dasharray: 2 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.spark .crosshair { stroke: var(--chakra-colors-fg-muted); stroke-width: 1; }
+.spark .tooltip {
+  position: absolute;
+  top: -6px;
+  transform: translate(-50%, -100%);
+  background: var(--chakra-colors-bg-panel);
+  border: 1px solid var(--chakra-colors-border);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  display: flex;
+  gap: 6px;
+  box-shadow: var(--chakra-shadows-sm);
+}
+.spark .tooltip span { color: var(--chakra-colors-fg-muted); }
+
+.log-line { font-family: var(--chakra-fonts-mono); font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.log-line mark { background: var(--chakra-colors-yellow-subtle); color: inherit; border-radius: 2px; }
