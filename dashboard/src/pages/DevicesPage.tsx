@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Box, Button, Checkbox, Collapsible, Field, Flex, HStack, IconButton, Input, NativeSelect, SimpleGrid, Stack, Table, Text } from '@chakra-ui/react';
-import { LuCable, LuHardDrive, LuHardDriveDownload, LuLayers, LuListChecks, LuPlay, LuPlus, LuSquare, LuStethoscope, LuTrash2, LuWifi, LuWrench, LuZap } from 'react-icons/lu';
-import { api, type Device, type SdkJob, type ToolStatus } from '../lib/api';
+import { Box, Button, Checkbox, Collapsible, Field, Flex, HStack, IconButton, Input, NativeSelect, Progress, SimpleGrid, Stack, Table, Text } from '@chakra-ui/react';
+import { LuCable, LuEraser, LuHardDrive, LuHardDriveDownload, LuLayers, LuListChecks, LuMemoryStick, LuPlay, LuPlus, LuSquare, LuStethoscope, LuTrash2, LuWifi, LuWrench, LuZap } from 'react-icons/lu';
+import { api, fmtBytes, startEmulatorProfile, type BootProgress, type Device, type SdkJob, type ToolStatus } from '../lib/api';
 import type { Live } from '../lib/useLive';
-import { qk, useAvds, useProfiles, useSdkJobs, useTools } from '../lib/queries';
+import { qk, useAvds, useBoot, useProfiles, useSdkJobs, useSdkStorage, useTools } from '../lib/queries';
 import { Badge, Card, Empty, Loading, Notice, type Tone } from '../components/ui';
 import { SectionLayout } from '../components/SectionNav';
 import { notify } from '../components/toaster';
@@ -12,6 +12,32 @@ import { AdbPanel } from './devices/AdbPanel';
 import { SdkPanel } from './devices/SdkPanel';
 import { StoragePanel } from './devices/StoragePanel';
 import { SpeedCard } from './devices/SpeedCard';
+import { RamCard } from './devices/RamCard';
+import { CreateAvdDialog } from './devices/CreateAvd';
+
+/** Size of an AVD's internal storage as config.ini writes it (bytes or "6G"). */
+const partition = (v: string | null) => {
+  if (!v) return null;
+  if (/^\d+$/.test(v)) return fmtBytes(Number(v));
+  return v.replace(/^(\d+)\s*([MG])B?$/i, (_m, n, u) => `${n} ${u.toUpperCase()}B`);
+};
+
+/** Small 1 → 100 % bar for a profile whose emulator is booting. */
+function BootBar({ boot }: { boot: BootProgress }) {
+  return (
+    <Stack gap="0.5" mt="1" minW="140px" maxW="200px">
+      <Progress.Root value={boot.progress} size="xs" colorPalette="green" striped animated aria-label={`Boot progress ${Math.round(boot.progress)} %`}>
+        <Progress.Track>
+          <Progress.Range />
+        </Progress.Track>
+      </Progress.Root>
+      <Text fontSize="2xs" color="fg.muted" truncate title={boot.phase ?? ''}>
+        {Math.round(boot.progress)} % · {boot.phase}
+        {boot.eta_s ? ` · ~${boot.eta_s}s` : ''}
+      </Text>
+    </Stack>
+  );
+}
 
 const STATUS: Record<string, Tone> = { online: 'good', starting: 'warning', offline: 'neutral', error: 'critical' };
 
@@ -24,6 +50,10 @@ export function DevicesPage({ live }: { live: Live }) {
   const tools = useTools().data ?? null;
   const avds = useAvds().data ?? null;
   const jobs = useSdkJobs().data ?? [];
+  const bootList = useBoot().data ?? [];
+  const bootOf = (id: string) => bootList.find((b) => b.device_id === id && !b.booted) ?? null;
+  const storage = useSdkStorage(!!tools?.avdmanager).data ?? null;
+  const [creating, setCreating] = useState(false);
   /** profile id → provision job id, so the row can show its own progress */
   const [provisioning, setProvisioning] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -123,6 +153,7 @@ export function DevicesPage({ live }: { live: Live }) {
         { id: 'dm-profiles', label: 'Device profiles', icon: <LuListChecks />, badge: devices ? devices.length : undefined },
         { id: 'dm-avds', label: 'Installed AVDs', icon: <LuLayers />, badge: avds?.length },
         { id: 'dm-speed', label: 'Emulator speed', icon: <LuZap /> },
+        { id: 'dm-ram', label: 'Memory (RAM saver)', icon: <LuMemoryStick /> },
         { id: 'dm-adb', label: 'Connected (ADB)', icon: <LuCable /> },
         { id: 'dm-wifi', label: 'Wi-Fi / QR pairing', icon: <LuWifi /> },
         { id: 'dm-sdk', label: 'System images', icon: <LuHardDriveDownload />, badge: runningJobs || undefined },
@@ -268,7 +299,8 @@ export function DevicesPage({ live }: { live: Live }) {
                       <Table.Cell>{d.resolution ?? '—'}</Table.Cell>
                       <Table.Cell textAlign="end" whiteSpace="nowrap">{`${d.ram_mb ?? 2048} MB`}</Table.Cell>
                       <Table.Cell>
-                        <Badge tone={STATUS[d.status] ?? 'neutral'}>{d.status}</Badge>
+                        <Badge tone={STATUS[d.status] ?? 'neutral'}>{bootOf(d.id) ? 'booting' : d.status}</Badge>
+                        {bootOf(d.id) && <BootBar boot={bootOf(d.id)!} />}
                         {d.last_error && (
                           <Text fontSize="xs" color="fg.error" title={d.last_error} maxW="220px" truncate>
                             {d.last_error}
@@ -304,7 +336,11 @@ export function DevicesPage({ live }: { live: Live }) {
                                 disabled={!!busy || !d.avd_name}
                                 loading={busy === `s-${d.id}`}
                                 title={cap && !cap.can_start_now ? 'Limit reached or not enough free RAM' : 'Boot emulator'}
-                                onClick={() => act(`s-${d.id}`, () => api(`/devices/${d.id}/start`, { method: 'POST', body: '{}' }), `Booting ${d.name}…`)}
+                                onClick={() =>
+                                  act(`s-${d.id}`, async () => {
+                                    if (await startEmulatorProfile(d.id)) notify('ok', `Booting ${d.name}… progress is shown in the Status column.`);
+                                  })
+                                }
                               >
                                 <LuPlay /> Start
                               </Button>
@@ -333,7 +369,19 @@ export function DevicesPage({ live }: { live: Live }) {
         )}
       </Card>
 
-      <Card id="dm-avds" icon={<LuLayers />} title="Installed AVDs" subtitle={tools?.sdk_root ? tools.sdk_root : 'Android SDK not detected'}>
+      <Card
+        id="dm-avds"
+        icon={<LuLayers />}
+        title="Installed AVDs"
+        subtitle={storage ? `${fmtBytes(storage.total_avd_bytes)} on disk · ${storage.effective_dir}` : tools?.sdk_root ? tools.sdk_root : 'Android SDK not detected'}
+        actions={
+          tools?.avdmanager ? (
+            <Button size="xs" onClick={() => setCreating(true)}>
+              <LuPlus /> New AVD
+            </Button>
+          ) : undefined
+        }
+      >
         {avds === null ? (
           <Loading rows={2} height="8" />
         ) : !avds.length ? (
@@ -344,15 +392,49 @@ export function DevicesPage({ live }: { live: Live }) {
           <Stack gap="1.5">
             {avds.map((a) => {
               const isRunning = list.some((d) => d.avd_name === a && d.running);
+              const loc = storage?.avds.find((x) => x.name === a);
+              const img = loc?.image?.split(';');
               return (
                 <Flex key={a} justify="space-between" align="center" gap="3" borderWidth="1px" borderRadius="md" px="3" py="2" wrap="wrap">
-                  <HStack gap="2" minW="0">
-                    <Text fontFamily="mono" fontSize="sm" truncate>
-                      {a}
-                    </Text>
-                    {isRunning && <Badge tone="good">running</Badge>}
-                  </HStack>
+                  <Box minW="0">
+                    <HStack gap="2" minW="0">
+                      <Text fontFamily="mono" fontSize="sm" truncate>
+                        {a}
+                      </Text>
+                      {isRunning && <Badge tone="good">running</Badge>}
+                    </HStack>
+                    {loc && (
+                      <Text fontSize="xs" color="fg.muted">
+                        {fmtBytes(loc.size_bytes)} on disk
+                        {loc.snapshot_bytes > 0 && ` (fast-boot snapshot ${fmtBytes(loc.snapshot_bytes)})`}
+                        {img && ` · ${img[1]} ${img[2].replace(/_/g, ' ')}`}
+                        {loc.ram_mb && ` · RAM ${loc.ram_mb >= 1024 ? `${loc.ram_mb / 1024} GB` : `${loc.ram_mb} MB`}`}
+                        {partition(loc.data_partition) && ` · storage ${partition(loc.data_partition)}`}
+                      </Text>
+                    )}
+                  </Box>
                   <HStack gap="2">
+                    {loc && loc.wipeable_bytes > 64 * 1024 ** 2 && (
+                      <Button
+                        size="2xs"
+                        variant="ghost"
+                        disabled={!!busy || isRunning}
+                        loading={busy === `wipe-${a}`}
+                        title={isRunning ? 'Stop the emulator first' : 'Reset to factory state: frees user data, cache and the fast-boot snapshot. The next start is a first boot (~1 min).'}
+                        onClick={() =>
+                          confirm(
+                            `Wipe data of "${a}"? This frees ${fmtBytes(loc.wipeable_bytes)}: installed apps, their data and the fast-boot snapshot are deleted. The AVD stays and its next start is a fresh first boot (~1 min).`,
+                          ) &&
+                          act(`wipe-${a}`, async () => {
+                            const r = await api<{ freed_bytes: number }>(`/sdk/avds/${encodeURIComponent(a)}/wipe`, { method: 'POST', body: '{}' });
+                            notify('ok', `Wiped ${a} — freed ${fmtBytes(r.freed_bytes)}`);
+                            void qc.invalidateQueries({ queryKey: qk.sdkStorage });
+                          })
+                        }
+                      >
+                        <LuEraser /> Wipe data ({fmtBytes(loc.wipeable_bytes)})
+                      </Button>
+                    )}
                     {knownAvds.has(a) ? (
                       <Badge tone="neutral">profile exists</Badge>
                     ) : (
@@ -374,7 +456,16 @@ export function DevicesPage({ live }: { live: Live }) {
                       title={isRunning ? 'Stop the emulator first' : 'Delete this AVD and its data'}
                       aria-label={`Delete AVD ${a}`}
                       onClick={() =>
-                        confirm(`Delete AVD "${a}" and all its data? The system image stays installed.`) && act(`del-${a}`, () => api(`/sdk/avds/${encodeURIComponent(a)}`, { method: 'DELETE' }), `Deleted ${a}`)
+                        confirm(`Delete AVD "${a}" and all its data${loc ? ` (${fmtBytes(loc.size_bytes)})` : ''}? The system image stays installed.`) &&
+                        act(
+                          `del-${a}`,
+                          async () => {
+                            await api(`/sdk/avds/${encodeURIComponent(a)}`, { method: 'DELETE' });
+                            void qc.invalidateQueries({ queryKey: qk.sdkStorage });
+                            void qc.invalidateQueries({ queryKey: qk.sdkInstalled });
+                          },
+                          `Deleted ${a}`,
+                        )
                       }
                     >
                       <LuTrash2 />
@@ -388,6 +479,7 @@ export function DevicesPage({ live }: { live: Live }) {
       </Card>
 
       <SpeedCard id="dm-speed" />
+      <RamCard id="dm-ram" />
       <AdbPanel id="dm-adb" wifiId="dm-wifi" tools={tools} onProfilesChanged={() => void load()} />
       <SdkPanel id="dm-sdk" tools={tools} jobs={jobs.filter((j) => j.kind !== 'move_avds' && j.kind !== 'move_images')} onChanged={() => void load()} />
       {tools?.avdmanager ? (
@@ -399,6 +491,7 @@ export function DevicesPage({ live }: { live: Live }) {
           </Text>
         </Card>
       )}
+      <CreateAvdDialog open={creating} onClose={() => setCreating(false)} />
     </SectionLayout>
   );
 }

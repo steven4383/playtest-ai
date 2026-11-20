@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Badge as CBadge, Box, Button, Center, Flex, Grid, HStack, IconButton, Image, SegmentGroup, Spinner, Stack, Text, chakra } from '@chakra-ui/react';
-import { LuChevronsLeft, LuChevronsRight, LuMonitorUp, LuPlay, LuPower, LuRefreshCw, LuSmartphone, LuWifi } from 'react-icons/lu';
+import { Badge as CBadge, Box, Button, Center, Flex, Grid, HStack, IconButton, Image, Progress, SegmentGroup, Spinner, Stack, Text, chakra } from '@chakra-ui/react';
+import { LuChevronsLeft, LuChevronsRight, LuMemoryStick, LuMonitorUp, LuPlay, LuPlus, LuPower, LuRefreshCw, LuSmartphone, LuWifi } from 'react-icons/lu';
 import { SiFlutter } from 'react-icons/si';
-import { API, api, dev, type AdbDevice, type Device } from '../lib/api';
-import { qk, useAdbDevices, useAvds, useFlutterStatus, useProfiles, useScrcpy } from '../lib/queries';
+import { api, dev, startEmulatorProfile, type AdbDevice, type BootProgress, type Device } from '../lib/api';
+import { qk, useAdbDevices, useAvds, useBoot, useBooting, useFlutterStatus, useProfiles, useScrcpy } from '../lib/queries';
+import { refreshScreen, useScreen } from '../lib/screen';
+import { BootProgressView } from '../components/screen';
+import { CreateAvdDialog } from './devices/CreateAvd';
+import { RamSaverDialog } from './dev/RamSaver';
 import type { Live } from '../lib/useLive';
 import { Badge, CopyButton, Loading } from '../components/ui';
 import { notify } from '../components/toaster';
@@ -34,11 +38,79 @@ const ls = {
   },
 };
 
+/** Sidebar thumbnail: shared frame loop (every 20 s, thumbnails don't count as use), boot % while starting. */
+function Thumb({ serial, ok }: { serial: string; ok: boolean }) {
+  const { frame, lastGood } = useScreen(serial, { interval: 20_000, thumb: true, enabled: ok });
+  const boot = useBooting(serial);
+  const shown = frame && !frame.black ? frame : lastGood;
+  return (
+    <Center w="9" h="16" flexShrink={0} bg="gray.900" borderRadius="md" overflow="hidden" borderWidth="2px" borderColor={boot ? 'green.600' : 'gray.700'} position="relative">
+      {boot ? (
+        <Text fontSize="2xs" fontWeight="bold" color="white" className="num">
+          {Math.round(boot.progress)}%
+        </Text>
+      ) : ok && shown ? (
+        <Image src={shown.url} alt="" w="100%" h="100%" objectFit="cover" />
+      ) : ok ? (
+        <Spinner size="xs" color="gray.500" />
+      ) : (
+        <Box color="gray.500">
+          <LuSmartphone />
+        </Box>
+      )}
+    </Center>
+  );
+}
+
+/** An emulator that is still booting (ADB does not list it as ready yet): click to watch it in the workspace. */
+function BootingItem({ b, rail, selected, onSelect }: { b: BootProgress; rail: boolean; selected: boolean; onSelect: () => void }) {
+  return (
+    <chakra.button
+      onClick={onSelect}
+      aria-current={selected ? 'true' : undefined}
+      title={`${b.avd_name} · booting ${Math.round(b.progress)} %`}
+      display="flex"
+      alignItems="center"
+      gap="2.5"
+      w="100%"
+      p="2"
+      borderRadius="md"
+      borderWidth="1px"
+      textAlign="left"
+      borderColor={selected ? 'colorPalette.muted' : 'transparent'}
+      bg={selected ? 'colorPalette.subtle' : 'transparent'}
+      _hover={{ bg: selected ? 'colorPalette.subtle' : 'bg.muted' }}
+      justifyContent={rail ? 'center' : 'flex-start'}
+    >
+      <Center w="9" h="16" flexShrink={0} bg="gray.900" borderRadius="md" borderWidth="2px" borderColor="green.600">
+        <Text fontSize="2xs" fontWeight="bold" color="white" className="num">
+          {Math.round(b.progress)}%
+        </Text>
+      </Center>
+      {!rail && (
+        <Box flex="1" minW="0">
+          <Text fontWeight="medium" fontSize="sm" truncate>
+            {b.avd_name}
+          </Text>
+          <Progress.Root value={b.progress} size="xs" colorPalette="green" striped animated mt="1">
+            <Progress.Track>
+              <Progress.Range />
+            </Progress.Track>
+          </Progress.Root>
+          <Text fontSize="2xs" color="fg.muted" mt="1" truncate>
+            {b.phase}
+            {b.eta_s ? ` · ~${b.eta_s}s` : ''}
+          </Text>
+        </Box>
+      )}
+    </chakra.button>
+  );
+}
+
 function DeviceItem({
   d,
   selected,
   rail,
-  thumb,
   flutterSees,
   onSelect,
   onDropApk,
@@ -47,7 +119,6 @@ function DeviceItem({
   d: AdbDevice;
   selected: boolean;
   rail: boolean;
-  thumb: number;
   flutterSees: boolean;
   onSelect: () => void;
   onDropApk: (f: File) => void;
@@ -90,15 +161,7 @@ function DeviceItem({
       opacity={ok ? 1 : 0.65}
       justifyContent={rail ? 'center' : 'flex-start'}
     >
-      <Center w="9" h="16" flexShrink={0} bg="gray.900" borderRadius="md" overflow="hidden" borderWidth="2px" borderColor="gray.700">
-        {ok ? (
-          <Image src={`${API}${dev(d.serial, '/screen')}?t=${thumb}`} alt="" w="100%" h="100%" objectFit="cover" loading="lazy" onError={(e) => ((e.target as HTMLImageElement).style.visibility = 'hidden')} />
-        ) : (
-          <Box color="gray.500">
-            <LuSmartphone />
-          </Box>
-        )}
-      </Center>
+      <Thumb serial={d.serial} ok={ok} />
       {!rail && (
         <Box flex="1" minW="0">
           <Text fontWeight="medium" fontSize="sm" truncate>
@@ -143,19 +206,17 @@ export function DevPage(_props: { live: Live }) {
   const [selected, setSelected] = useState<string | null>(() => ls.get(SERIAL_KEY));
   const [rail, setRail] = useState(() => ls.get(RAIL_KEY) === '1');
   const [headless, setHeadless] = useState(() => ls.get(HEADLESS_KEY) === '1');
-  const [thumb, setThumb] = useState(Date.now());
   const [installing, setInstalling] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [ramFor, setRamFor] = useState<AdbDevice | null>(null);
+  const booting = (useBoot().data ?? []).filter((b) => !b.booted);
 
   const loadDevices = () => {
     for (const key of [qk.adbDevices, qk.profiles, qk.avds]) void qc.invalidateQueries({ queryKey: key });
   };
   const loadScrcpy = () => qc.invalidateQueries({ queryKey: qk.scrcpy });
 
-  useEffect(() => {
-    const th = setInterval(() => document.visibilityState === 'visible' && setThumb(Date.now()), 20_000);
-    return () => clearInterval(th);
-  }, []);
 
   // Re-check `flutter devices` only when the set of connected devices really changes.
   const serialKey = adbDevices ? adbDevices.map((d) => `${d.serial}:${d.state}`).join(',') : null;
@@ -169,15 +230,20 @@ export function DevPage(_props: { live: Live }) {
   const sorted = useMemo(() => [...(adbDevices ?? [])].sort((a, b) => Number(b.state === 'device') - Number(a.state === 'device')), [adbDevices]);
   useEffect(() => {
     if (!adbDevices) return;
-    if (selected && adbDevices.some((d) => d.serial === selected)) return;
+    if (selected && (adbDevices.some((d) => d.serial === selected) || booting.some((b) => b.serial === selected))) return;
     const next = sorted.find((d) => d.state === 'device')?.serial ?? sorted[0]?.serial ?? null;
     if (next !== selected) setSelected(next);
-  }, [adbDevices, sorted, selected]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adbDevices, sorted, selected, booting.length]);
   useEffect(() => {
     if (selected) ls.set(SERIAL_KEY, selected);
   }, [selected]);
 
   const device = sorted.find((d) => d.serial === selected) ?? null;
+  const readySerials = new Set(sorted.filter((d) => d.state === 'device').map((d) => d.serial));
+  // Booting emulators ADB does not list as ready yet get their own item (with the 1 → 100 % bar).
+  const bootOnly = booting.filter((b) => !readySerials.has(b.serial));
+  const bootingSelected = !device || device.state !== 'device' ? (booting.find((b) => b.serial === selected) ?? null) : null;
   const flutterIds = new Set(flutter?.devices.map((d) => d.id) ?? []);
   const startable = profiles.filter((p) => p.type === 'emulator' && p.avd_name && avds.includes(p.avd_name) && !p.running);
 
@@ -225,13 +291,10 @@ export function DevPage(_props: { live: Live }) {
   const startEmulator = async (p: Device) => {
     setBusy(p.id);
     try {
-      await api(`/devices/${p.id}/start?window=${headless ? 'false' : 'true'}`, { method: 'POST', body: '{}' });
-      notify(
-        'ok',
-        headless
-          ? `Booting ${p.name} headless (no window, less RAM/GPU) — it appears in the list when ready (~30–90 s). Use the live screen or Mirror to see it.`
-          : `Booting ${p.name} with a window — it appears in the list when ready (~30–90 s).`,
-      );
+      const r = await startEmulatorProfile(p.id, `window=${headless ? 'false' : 'true'}`);
+      if (!r) return;
+      notify('ok', headless ? `Booting ${p.name} headless (no window, less RAM/GPU) — progress is shown in the list.` : `Booting ${p.name} with a window — progress is shown in the list.`);
+      if (r?.serial) setSelected(r.serial);
       loadDevices();
     } catch (e: any) {
       notify('error', e.message);
@@ -287,7 +350,7 @@ export function DevPage(_props: { live: Live }) {
             </Text>
           )}
           <HStack gap="0.5" flexDirection={rail ? 'column' : 'row'}>
-            <IconButton size="2xs" variant="ghost" aria-label="Refresh devices" title="Refresh" onClick={() => (loadDevices(), setThumb(Date.now()))}>
+            <IconButton size="2xs" variant="ghost" aria-label="Refresh devices" title="Refresh" onClick={() => (loadDevices(), (adbDevices ?? []).forEach((d) => refreshScreen(d.serial)))}>
               <LuRefreshCw />
             </IconButton>
             <IconButton size="2xs" variant="ghost" aria-label={rail ? 'Expand device list' : 'Minimise device list'} title={rail ? 'Expand' : 'Minimise'} onClick={toggleRail} display={{ base: 'none', lg: 'inline-flex' }}>
@@ -296,9 +359,16 @@ export function DevPage(_props: { live: Live }) {
           </HStack>
         </Flex>
 
+        {bootOnly.length > 0 && (
+          <Stack gap="1" mb="1">
+            {bootOnly.map((b) => (
+              <BootingItem key={b.serial} b={b} rail={rail} selected={b.serial === selected} onSelect={() => setSelected(b.serial)} />
+            ))}
+          </Stack>
+        )}
         {adbDevices === null ? (
           <Loading rows={3} height="16" label="Looking for devices" />
-        ) : sorted.length === 0 ? (
+        ) : sorted.length === 0 && bootOnly.length === 0 ? (
           !rail && (
             <Text fontSize="xs" color="fg.muted" px="1" pb="2">
               No devices. Plug in a phone with USB debugging on, pair over Wi-Fi on{' '}
@@ -310,13 +380,12 @@ export function DevPage(_props: { live: Live }) {
           )
         ) : (
           <Stack gap="1" direction={{ base: 'row', lg: 'column' }} overflowX={{ base: 'auto', lg: 'visible' }}>
-            {sorted.map((d) => (
+            {sorted.filter((d) => d.state === 'device' || !bootOnly.some((b) => b.serial === d.serial)).map((d) => (
               <Box key={d.serial} minW={{ base: '220px', lg: 'auto' }}>
                 <DeviceItem
                   d={d}
                   selected={d.serial === selected}
                   rail={rail}
-                  thumb={thumb}
                   flutterSees={!!flutter?.available && flutterIds.has(d.serial)}
                   onSelect={() => setSelected(d.serial)}
                   onDropApk={(f) => void dropInstall(d, f)}
@@ -327,7 +396,7 @@ export function DevPage(_props: { live: Live }) {
           </Stack>
         )}
 
-        {!rail && startable.length > 0 && (
+        {!rail && (
           <Stack gap="1" mt="3" pt="3" borderTopWidth="1px">
             <Stack gap="1.5" px="1">
               <Text fontSize="2xs" fontWeight="semibold" textTransform="uppercase" letterSpacing="wider" color="fg.subtle">
@@ -346,6 +415,14 @@ export function DevPage(_props: { live: Live }) {
                 <LuPlay /> <Text truncate>{p.name}</Text>
               </Button>
             ))}
+            {startable.length === 0 && (
+              <Text fontSize="2xs" color="fg.muted" px="1">
+                {profiles.some((p) => p.type === 'emulator' && p.running) ? 'Every emulator profile is running.' : 'No emulator to start yet.'}
+              </Text>
+            )}
+            <Button size="xs" variant="outline" justifyContent="flex-start" onClick={() => setCreating(true)} title="Create a new AVD from an installed system image">
+              <LuPlus /> New emulator
+            </Button>
           </Stack>
         )}
 
@@ -410,6 +487,9 @@ export function DevPage(_props: { live: Live }) {
                     <LuWifi /> Switch to Wi-Fi
                   </Button>
                 )}
+                <Button size="xs" variant="outline" onClick={() => setRamFor(device)} title="See what uses this device's RAM and close background apps">
+                  <LuMemoryStick /> RAM saver
+                </Button>
                 {device.connection === 'emulator' && (
                   <Button size="xs" variant="outline" colorPalette="red" onClick={() => void stopEmulator(device)} loading={busy === 'stop'} disabled={device.busy} title={device.busy ? 'A test run is using it' : 'Shut this emulator down (works for headless ones too)'}>
                     <LuPower /> Stop
@@ -422,8 +502,34 @@ export function DevPage(_props: { live: Live }) {
             )}
           </Flex>
         )}
-        <Workspace device={device} canMirror={!!scrcpy?.available} onMirror={(d) => void mirror(d)} flutter={flutter} />
+        {bootingSelected ? (
+          <Stack gap="4">
+            <Flex justify="space-between" align="center" gap="3" wrap="wrap" borderWidth="1px" borderRadius="lg" bg="bg.panel" px="4" py="3">
+              <Box minW="0">
+                <HStack gap="2">
+                  <Text fontFamily="heading" fontWeight="semibold" fontSize="lg" truncate>
+                    {bootingSelected.avd_name}
+                  </Text>
+                  <Badge tone="warning">booting</Badge>
+                </HStack>
+                <Text fontSize="xs" color="fg.muted" fontFamily="mono">
+                  {bootingSelected.serial}
+                </Text>
+              </Box>
+            </Flex>
+            <Center bg="gray.900" borderRadius="xl" borderWidth="6px" borderColor="gray.800" minH="420px" maxW="420px" w="100%" mx={{ base: 'auto', lg: '0' }}>
+              <BootProgressView boot={bootingSelected} />
+            </Center>
+            <Text fontSize="sm" color="fg.muted">
+              The screen, logcat, apps and the other tools open here by themselves once Android is ready.
+            </Text>
+          </Stack>
+        ) : (
+          <Workspace device={device} canMirror={!!scrcpy?.available} onMirror={(d) => void mirror(d)} flutter={flutter} />
+        )}
       </Stack>
+      <CreateAvdDialog open={creating} onClose={() => setCreating(false)} />
+      {ramFor && <RamSaverDialog serial={ramFor.serial} title={ramFor.avd_name ?? ramFor.model ?? ramFor.serial} isEmulator={ramFor.connection === 'emulator'} open onClose={() => setRamFor(null)} />}
     </Grid>
   );
 }

@@ -906,7 +906,159 @@ async function toWireless(serial: string) {
 
 // ----------------------------------------------------------------
 
+// ---------------------------------------------------------------- RAM saver
+
+/** OOM groups printed by `dumpsys meminfo`, most important first. Only the closable ones are offered to the user. */
+const MEM_GROUPS = new Set([
+  'Native', 'System', 'Persistent', 'Persistent Service', 'Foreground', 'Visible', 'Perceptible', 'Perceptible Medium', 'Perceptible Low',
+  'Backup', 'Heavy Weight', 'A Services', 'Home', 'Previous', 'B Services', 'Cached',
+]);
+/** Background groups Android itself would kill first when memory runs low. */
+const CLOSABLE_GROUPS = new Set(['A Services', 'Previous', 'B Services', 'Cached']);
+/** Never force-stopped, whatever group they are in (system UI, telephony, Play services the app under test may need). */
+const PROTECTED_PKGS = new Set([
+  'android', 'com.android.systemui', 'com.android.phone', 'com.android.shell', 'com.android.settings', 'com.google.android.gms', 'com.google.android.gsf',
+  'com.android.bluetooth', 'com.android.networkstack', 'com.android.providers.media.module', 'com.android.se', 'com.android.nfc',
+]);
+
+export interface MemProcess {
+  name: string;
+  package: string | null;
+  pid: number | null;
+  mb: number;
+  group: string;
+  closable: boolean;
+}
+
+/** "Total PSS by OOM adjustment" from `dumpsys meminfo` (PSS preferred; Android 14+ prints an RSS table too). */
+export function parseMeminfo(out: string): { groups: { name: string; mb: number }[]; processes: MemProcess[] } {
+  const pss = out.search(/^Total PSS by OOM adjustment:/m);
+  const start = pss >= 0 ? pss : out.search(/^Total RSS by OOM adjustment:/m);
+  if (start < 0) return { groups: [], processes: [] };
+  const lines = out.slice(start).split(/\r?\n/).slice(1);
+  const groups: { name: string; mb: number }[] = [];
+  const processes: MemProcess[] = [];
+  let group = '';
+  for (const line of lines) {
+    if (!line.trim() || /^Total /.test(line)) break;
+    const m = line.match(/^\s*([\d,]+)K:\s+(.+?)\s*$/);
+    if (!m) continue;
+    const mb = Math.round((Number(m[1].replace(/,/g, '')) / 1024) * 10) / 10;
+    const rest = m[2];
+    if (!rest.includes('(pid') && MEM_GROUPS.has(rest)) {
+      group = rest;
+      groups.push({ name: rest, mb });
+      continue;
+    }
+    const name = rest.replace(/\s*\(pid.*$/, '');
+    const pkg = name.split(':')[0].match(/^[a-zA-Z][\w]*(\.[a-zA-Z_][\w]*)+$/)?.[0] ?? null;
+    processes.push({
+      name,
+      package: pkg,
+      pid: Number(rest.match(/\(pid (\d+)/)?.[1]) || null,
+      mb,
+      group,
+      closable: CLOSABLE_GROUPS.has(group) && !!pkg && !PROTECTED_PKGS.has(pkg),
+    });
+  }
+  return { groups, processes: processes.sort((a, b) => b.mb - a.mb) };
+}
+
+async function availableMb(serial: string): Promise<number | null> {
+  const r = await sh(serial, ['cat', '/proc/meminfo']);
+  const kb = Number(r.stdout.match(/^MemAvailable:\s+(\d+)/m)?.[1]);
+  return kb ? Math.round(kb / 1024) : null;
+}
+
+/** Launcher and keyboard: closing either would leave a blank or unusable screen. */
+async function essentialPackages(serial: string): Promise<Set<string>> {
+  const [home, ime] = await Promise.all([
+    sh(serial, ['cmd', 'package', 'resolve-activity', '--brief', '-c', 'android.intent.category.HOME', '-a', 'android.intent.action.MAIN']),
+    sh(serial, ['settings', 'get', 'secure', 'default_input_method']),
+  ]);
+  const out = new Set<string>();
+  const homePkg = home.stdout.trim().split(/\r?\n/).pop()?.split('/')[0];
+  const imePkg = ime.stdout.trim().split('/')[0];
+  for (const p of [homePkg, imePkg]) if (p && PACKAGE_LIKE.test(p)) out.add(p);
+  return out;
+}
+const PACKAGE_LIKE = /^[a-zA-Z][\w]*(\.[a-zA-Z_][\w]*)+$/;
+
+/** Device RAM: totals from /proc/meminfo, usage by group and app from `dumpsys meminfo`, and which apps can be closed. */
+async function memory(serial: string) {
+  assertSerial(serial);
+  const [mem, dump, fg, essential] = await Promise.all([
+    sh(serial, ['cat', '/proc/meminfo']),
+    // -t 60: dumpsys gives up after 10 s by default, which a busy emulator easily needs (it then prints nothing).
+    sh(serial, ['dumpsys', '-t', '60', 'meminfo'], 90_000),
+    adb.foregroundPackage(serial).catch(() => null),
+    essentialPackages(serial).catch(() => new Set<string>()),
+  ]);
+  const kb = (k: string) => Number(mem.stdout.match(new RegExp(`^${k}:\\s+(\\d+)`, 'm'))?.[1]) || 0;
+  const total = Math.round(kb('MemTotal') / 1024);
+  const avail = Math.round(kb('MemAvailable') / 1024);
+  const { groups, processes } = parseMeminfo(dump.stdout);
+  const byPkg = new Map<string, { package: string; mb: number; processes: number; group: string }>();
+  for (const p of processes) {
+    if (!p.closable || !p.package || p.package === fg || essential.has(p.package)) continue;
+    const cur = byPkg.get(p.package);
+    if (cur) {
+      cur.mb = Math.round((cur.mb + p.mb) * 10) / 10;
+      cur.processes++;
+    } else byPkg.set(p.package, { package: p.package, mb: p.mb, processes: 1, group: p.group });
+  }
+  const closable = [...byPkg.values()].sort((a, b) => b.mb - a.mb);
+  return {
+    serial,
+    total_mb: total || null,
+    available_mb: avail || null,
+    used_pct: total ? Math.round(((total - avail) / total) * 100) : null,
+    swap_total_mb: Math.round(kb('SwapTotal') / 1024),
+    swap_used_mb: Math.round((kb('SwapTotal') - kb('SwapFree')) / 1024),
+    groups,
+    top: processes.slice(0, 12).map((p) => ({ ...p, closable: p.closable && p.package !== fg && !essential.has(p.package ?? '') })),
+    closable,
+    closable_mb: Math.round(closable.reduce((s, c) => s + c.mb, 0)),
+    foreground: fg,
+    busy: serialBusy(serial),
+  };
+}
+
+/**
+ * Free device RAM: force-stop the chosen background apps (their services too), then `am kill-all` for every other
+ * cached process Android considers safe to kill. The app on screen, the launcher, the keyboard and system apps are never touched.
+ */
+async function freeMemory(serial: string, packages: string[]) {
+  assertSerial(serial);
+  assertFree(serial);
+  if (packages.length > 100) throw bad('Choose at most 100 apps');
+  for (const p of packages) assertPackage(p);
+  const [fg, essential, before] = await Promise.all([adb.foregroundPackage(serial).catch(() => null), essentialPackages(serial).catch(() => new Set<string>()), availableMb(serial)]);
+  const stopped: string[] = [];
+  const skipped: string[] = [];
+  for (const p of [...new Set(packages)]) {
+    if (PROTECTED_PKGS.has(p) || p === fg || essential.has(p)) {
+      skipped.push(p);
+      continue;
+    }
+    const r = await adb.forceStop(serial, p);
+    (r.ok ? stopped : skipped).push(p);
+  }
+  await sh(serial, ['am', 'kill-all'], 20_000);
+  await sleep(2500); // let the kernel account the freed pages
+  const after = await availableMb(serial);
+  return {
+    before_mb: before,
+    after_mb: after,
+    freed_mb: before !== null && after !== null ? Math.max(0, after - before) : null,
+    stopped,
+    skipped,
+  };
+}
+
 export const devkit = {
+  memory,
+  freeMemory,
   info,
   apps,
   appDetails,

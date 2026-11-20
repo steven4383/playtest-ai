@@ -10,6 +10,7 @@ import { bus } from '../core/events.js';
 import { config } from '../config.js';
 import { deviceInput, devicePatch, deviceRepo } from '../services/devices.js';
 import { systemMonitor } from '../services/system-monitor.js';
+import { hostRam, setIdleStopMinutes, stopIdleEmulators } from '../services/ram-saver.js';
 
 export async function deviceRoutes(app: FastifyInstance) {
   // Keep DB status in sync with emulator lifecycle events.
@@ -60,10 +61,14 @@ export async function deviceRoutes(app: FastifyInstance) {
         error: `Concurrency limit reached (MAX_CONCURRENT_EMULATORS=${config.MAX_CONCURRENT_EMULATORS}). Stop a running emulator first.`,
       });
 
+    // RAM check for THIS profile's emulator (its own RAM setting, not the global default) + host overhead + headroom.
     const cap = systemMonitor.capacity();
-    if (cap.startable_now < 1 && req.query.force !== 'true')
+    const needGb = (device.ram_mb ?? config.EMULATOR_RAM_MB) / 1024 + 0.75;
+    const freeGb = systemMonitor.latest()?.memory.available_gb ?? null;
+    if (freeGb !== null && freeGb < needGb + 1 && req.query.force !== 'true')
       return reply.code(409).send({
-        error: `Not enough free RAM to start another emulator safely (needs ~${cap.per_emulator.ram_gb} GB + 1 GB headroom).`,
+        error: `Not enough free RAM to start ${device.name} safely: ${freeGb.toFixed(1)} GB free, needs ~${needGb.toFixed(1)} GB + 1 GB headroom. Free RAM under Device Manager → Memory (RAM saver), or start anyway.`,
+        code: 'low_ram',
         capacity: cap,
         hint: 'Close other apps or retry with ?force=true',
       });
@@ -242,5 +247,18 @@ export async function deviceRoutes(app: FastifyInstance) {
   app.get('/emulators/avds', async () => emulatorManager.listAvds());
   app.get('/emulators/running', async () => emulatorManager.list());
   app.get('/emulators/speed', async () => emulatorManager.speedInfo());
+  /** Boot progress (0-100, stage, ETA) of every emulator PlayTest tracks; live updates arrive as `boot_progress` events. */
+  app.get('/emulators/boot', async () => emulatorManager.boot());
+
+  // ---- RAM saver (PC)
+  app.get('/system/ram', async () => hostRam());
+  app.post('/emulators/stop-idle', async (req) => {
+    const b = z.object({ idle_minutes: z.number().int().min(0).max(1440).default(10) }).parse(req.body ?? {});
+    return stopIdleEmulators(b.idle_minutes, { headlessOnly: false, reason: `RAM saver: stopped (idle ${b.idle_minutes}+ min)` });
+  });
+  app.put('/emulators/settings', async (req) => {
+    const b = z.object({ idle_stop_minutes: z.number().int().min(0).max(1440) }).parse(req.body);
+    return setIdleStopMinutes(b.idle_stop_minutes);
+  });
   app.get('/tools', async () => toolStatus());
 }

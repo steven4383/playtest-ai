@@ -34,6 +34,8 @@ export const KEYCODES: Record<string, number> = {
   enter: 66,
   delete: 67,
   menu: 82,
+  /** Turns the display on (never off, unlike power). */
+  wakeup: 224,
 };
 
 export type InputAction =

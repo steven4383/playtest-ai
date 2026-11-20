@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Box, Button, Center, Flex, HStack, IconButton, Image, Input, SimpleGrid, Spinner, Stack, Text } from '@chakra-ui/react';
 import { LuArrowLeft, LuCamera, LuCircle, LuCornerDownLeft, LuDelete, LuMonitorUp, LuPause, LuPlay, LuPower, LuSend, LuSquare, LuVolume1, LuVolume2 } from 'react-icons/lu';
-import { API, api, dev } from '../../lib/api';
+import { api, dev } from '../../lib/api';
+import { useBooting } from '../../lib/queries';
+import { refreshScreen, useScreen } from '../../lib/screen';
+import { BootProgressView, DarkScreenHint, DimmedFrame, ScreenLoading } from '../../components/screen';
 import { notify } from '../../components/toaster';
 
 const KEYS = [
@@ -16,68 +19,24 @@ const KEYS = [
 /**
  * In-browser live view with control: pulls PNG frames (adb screencap) as fast as the device delivers them
  * (~1–4 fps) and sends taps / swipes / keys through `adb shell input`. For smooth 60 fps use the scrcpy mirror.
+ * While an emulator boots it shows the boot progress (1–100 %), and a black frame gets a "Wake screen" hint.
  */
 export function LiveScreen({ serial, title, onMirror, canMirror }: { serial: string; title: string; onMirror?: () => void; canMirror: boolean }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
-  const [fps, setFps] = useState<number | null>(null);
   const [text, setText] = useState('');
   const imgRef = useRef<HTMLImageElement>(null);
-  const lastBlob = useRef<Blob | null>(null);
   const down = useRef<{ x: number; y: number; t: number } | null>(null);
-
-  useEffect(() => {
-    setSrc(null);
-    setFps(null);
-    setError(null);
-  }, [serial]);
-
-  // Frame loop: fetch → swap object URL → next. Sequential so a slow device never queues requests.
-  useEffect(() => {
-    if (paused) return;
-    let stop = false;
-    let prevUrl: string | null = null;
-    const times: number[] = [];
-    (async () => {
-      while (!stop) {
-        const t0 = performance.now();
-        try {
-          if (document.visibilityState !== 'visible') {
-            await new Promise((r) => setTimeout(r, 1000));
-            continue;
-          }
-          const res = await fetch(`${API}${dev(serial, '/screen')}`, { cache: 'no-store' });
-          if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
-          const blob = await res.blob();
-          if (stop) break;
-          lastBlob.current = blob;
-          const url = URL.createObjectURL(blob);
-          setSrc(url);
-          if (prevUrl) URL.revokeObjectURL(prevUrl);
-          prevUrl = url;
-          setError(null);
-          times.push(performance.now());
-          while (times.length > 6) times.shift();
-          if (times.length > 1) setFps(((times.length - 1) * 1000) / (times[times.length - 1] - times[0]));
-        } catch (e: any) {
-          setError(e.message);
-          await new Promise((r) => setTimeout(r, 1500));
-        }
-        const spent = performance.now() - t0;
-        if (spent < 150) await new Promise((r) => setTimeout(r, 150 - spent));
-      }
-    })();
-    return () => {
-      stop = true;
-      if (prevUrl) setTimeout(() => URL.revokeObjectURL(prevUrl!), 1000);
-    };
-  }, [serial, paused]);
+  // Shared frame loop: the last frame shows instantly when the page opens again (no black flash).
+  const { frame, lastGood, error, fps } = useScreen(serial, { interval: 150, enabled: !paused });
+  const boot = useBooting(serial);
+  const dark = !!frame?.black && !boot;
+  const shown = dark ? null : frame;
 
   const send = useCallback(
     async (body: object) => {
       try {
         await api(dev(serial, '/input'), { method: 'POST', body: JSON.stringify(body) });
+        setTimeout(() => refreshScreen(serial), 200); // show the result of the tap right away
       } catch (e: any) {
         notify('error', e.message);
       }
@@ -91,6 +50,7 @@ export function LiveScreen({ serial, title, onMirror, canMirror }: { serial: str
     const r = img.getBoundingClientRect();
     return { x: Math.round(((clientX - r.left) / r.width) * img.naturalWidth), y: Math.round(((clientY - r.top) / r.height) * img.naturalHeight) };
   };
+  const wake = () => void send({ action: 'key', key: 'wakeup' });
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!imgRef.current?.naturalWidth) return;
@@ -119,9 +79,9 @@ export function LiveScreen({ serial, title, onMirror, canMirror }: { serial: str
   };
 
   const saveScreenshot = () => {
-    if (!lastBlob.current) return;
+    if (!frame) return;
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(lastBlob.current);
+    a.href = URL.createObjectURL(frame.blob);
     a.download = `screenshot-${serial.replace(/[^\w.-]/g, '_')}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -131,13 +91,13 @@ export function LiveScreen({ serial, title, onMirror, canMirror }: { serial: str
     <Stack gap="3" w="100%">
       <Flex justify="space-between" align="center" gap="2">
         <Text fontSize="xs" color="fg.muted" className="num">
-          {paused ? 'Paused' : fps !== null ? `${fps.toFixed(1)} fps` : 'Connecting…'}
+          {boot ? `Booting · ${Math.round(boot.progress)} %` : paused ? 'Paused' : fps !== null ? `${fps.toFixed(1)} fps` : frame ? 'Reconnecting…' : 'Connecting…'}
         </Text>
         <HStack gap="1">
           <IconButton size="xs" variant="ghost" aria-label={paused ? 'Resume' : 'Pause'} title={paused ? 'Resume' : 'Pause'} onClick={() => setPaused((p) => !p)}>
             {paused ? <LuPlay /> : <LuPause />}
           </IconButton>
-          <IconButton size="xs" variant="ghost" aria-label="Save screenshot" title="Save screenshot" onClick={saveScreenshot} disabled={!src}>
+          <IconButton size="xs" variant="ghost" aria-label="Save screenshot" title="Save screenshot" onClick={saveScreenshot} disabled={!frame}>
             <LuCamera />
           </IconButton>
           {onMirror && (
@@ -148,11 +108,11 @@ export function LiveScreen({ serial, title, onMirror, canMirror }: { serial: str
         </HStack>
       </Flex>
 
-      <Center bg="black" borderRadius="xl" overflow="hidden" minH="320px" position="relative" borderWidth="6px" borderColor="gray.800">
-        {src ? (
+      <Center bg="gray.900" borderRadius="xl" overflow="hidden" minH="320px" position="relative" borderWidth="6px" borderColor="gray.800">
+        {shown && !boot ? (
           <Image
             ref={imgRef}
-            src={src}
+            src={shown.url}
             alt={`Screen of ${title}`}
             draggable={false}
             maxH="calc(100dvh - 300px)"
@@ -168,12 +128,24 @@ export function LiveScreen({ serial, title, onMirror, canMirror }: { serial: str
             onPointerLeave={() => (down.current = null)}
           />
         ) : (
-          <Stack align="center" gap="2" color="gray.400" p="6" textAlign="center">
-            {error ? <Text fontSize="sm">{error}</Text> : <Spinner color="gray.400" />}
-            {!error && <Text fontSize="xs">Loading screen…</Text>}
-          </Stack>
+          <Box position="relative" w="100%" h="min(calc(100dvh - 300px), 640px)" minH="320px">
+            {lastGood && (boot || dark) && <DimmedFrame url={lastGood.url} />}
+            {boot ? (
+              <BootProgressView boot={boot} />
+            ) : dark ? (
+              <DarkScreenHint onWake={wake} />
+            ) : error ? (
+              <Stack align="center" justify="center" h="100%" gap="2" color="gray.400" p="6" textAlign="center">
+                <Spinner color="gray.400" size="sm" />
+                <Text fontSize="sm">{error}</Text>
+                <Text fontSize="xs">Retrying…</Text>
+              </Stack>
+            ) : (
+              <ScreenLoading />
+            )}
+          </Box>
         )}
-        {error && src && (
+        {error && shown && !boot && (
           <Box position="absolute" bottom="2" left="2" right="2" bg="blackAlpha.700" color="white" fontSize="xs" borderRadius="md" px="2" py="1">
             {error}
           </Box>

@@ -6,26 +6,24 @@ import {
   Checkbox,
   Code,
   Collapsible,
-  Field,
   Flex,
   Grid,
   HStack,
-  Input,
+  IconButton,
   Link,
-  NativeSelect,
   Progress,
   Stack,
   Table,
   Text,
 } from '@chakra-ui/react';
-import { LuDownload, LuHardDriveDownload, LuLink2, LuRefreshCw } from 'react-icons/lu';
+import { LuDownload, LuHardDriveDownload, LuLink2, LuRefreshCw, LuTrash2 } from 'react-icons/lu';
 import { api, fmtBytes, type SdkJob, type SystemImage, type ToolStatus } from '../../lib/api';
-import { qk, useSdkCatalog, useSdkDefinitions, useSdkInstalled } from '../../lib/queries';
+import { qk, useSdkCatalog, useSdkInstalled } from '../../lib/queries';
+import { CreateAvdForm } from './CreateAvd';
 import { Badge, Card, Empty, Loading, Notice, SubHeading, type Tone } from '../../components/ui';
 import { notify } from '../../components/toaster';
 
 const JOB_TONE: Record<SdkJob['status'], Tone> = { queued: 'neutral', running: 'warning', done: 'good', error: 'critical' };
-const PREFERRED_HW = ['pixel_8', 'pixel_7', 'pixel_6', 'medium_phone', 'pixel_5'];
 
 export function JobList({ jobs }: { jobs: SdkJob[] }) {
   if (!jobs.length) return null;
@@ -77,17 +75,6 @@ export function JobList({ jobs }: { jobs: SdkJob[] }) {
   );
 }
 
-function Select({ value, onChange, children, disabled }: { value: string; onChange: (v: string) => void; children: React.ReactNode; disabled?: boolean }) {
-  return (
-    <NativeSelect.Root size="sm" disabled={disabled}>
-      <NativeSelect.Field value={value} onChange={(e) => onChange(e.target.value)}>
-        {children}
-      </NativeSelect.Field>
-      <NativeSelect.Indicator />
-    </NativeSelect.Root>
-  );
-}
-
 /** Download system images (sdkmanager) and create AVDs (avdmanager) without opening Android Studio. */
 export function SdkPanel({ tools, jobs, onChanged, id }: { tools: ToolStatus | null; jobs: SdkJob[]; onChanged: () => void; id?: string }) {
   const qc = useQueryClient();
@@ -95,27 +82,19 @@ export function SdkPanel({ tools, jobs, onChanged, id }: { tools: ToolStatus | n
   const installedQ = useSdkInstalled(ready);
   const installed = installedQ.data?.images ?? null;
   const links = installedQ.data?.links ?? {};
-  const definitions = useSdkDefinitions(ready).data ?? [];
   const catalogQ = useSdkCatalog();
   const catalog = catalogQ.data ?? null;
   const catalogLoading = catalogQ.isFetching;
   const [showAll, setShowAll] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', package: '', device: '', create_profile: true });
-
-  useEffect(() => {
-    if (installedQ.error) notify('error', installedQ.error.message);
-  }, [installedQ.error]);
-  // Sensible defaults once the lists are known.
-  useEffect(() => {
-    if (installed?.[0]) setForm((f) => (f.package ? f : { ...f, package: installed[0].package }));
-  }, [installed]);
-  useEffect(() => {
-    if (definitions.length) setForm((f) => (f.device ? f : { ...f, device: PREFERRED_HW.find((h) => definitions.includes(h)) ?? definitions[0] ?? '' }));
-  }, [definitions]);
+  const [removing, setRemoving] = useState<string | null>(null);
 
   const installedSet = useMemo(() => new Set((installed ?? []).map((i) => i.package)), [installed]);
+  const pendingRemove = useMemo(
+    () => new Set(jobs.filter((j) => j.kind === 'uninstall_image' && (j.status === 'running' || j.status === 'queued')).map((j) => j.title.replace(/^Delete /, ''))),
+    [jobs],
+  );
   const pendingSet = useMemo(() => new Set(jobs.filter((j) => j.status === 'running' || j.status === 'queued').map((j) => j.title.replace(/^Download /, ''))), [jobs]);
 
   /** First click loads the catalog (then it stays cached); "Refresh" asks sdkmanager again. */
@@ -148,26 +127,26 @@ export function SdkPanel({ tools, jobs, onChanged, id }: { tools: ToolStatus | n
     }
   };
 
-  const create = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy('create');
+  /** Delete an installed image; asks again (force) when AVDs still boot from it. */
+  const removeImage = async (i: SystemImage) => {
+    const size = i.disk_bytes ? fmtBytes(i.disk_bytes) : 'its disk space';
+    const users = i.used_by ?? [];
+    const label = `Android ${i.android_version ?? '?'} (API ${i.api_level ?? i.api_id}) · ${i.tag_label}`;
+    const ok = users.length
+      ? confirm(`${label} is used by ${users.join(', ')}.
+
+Deleting it frees ${size}, but ${users.length === 1 ? 'that emulator stops' : 'those emulators stop'} working until the image is downloaded again. Delete anyway?`)
+      : confirm(`Delete ${label}? This frees ${size}. You can download it again later.`);
+    if (!ok) return;
+    setRemoving(i.package);
     try {
-      await api('/sdk/avds', { method: 'POST', body: JSON.stringify(form) });
-      setForm((f) => ({ ...f, name: '' }));
-      notify('info', `Creating ${form.name}…`);
-      onChanged();
+      await api('/sdk/images/uninstall', { method: 'POST', body: JSON.stringify({ package: i.package, force: users.length > 0 }) });
+      notify('info', `Deleting ${label} — progress is shown above the lists.`);
     } catch (e: any) {
       notify('error', e.message);
     } finally {
-      setBusy(null);
+      setRemoving(null);
     }
-  };
-
-  const suggestName = () => {
-    const img = installed?.find((i) => i.package === form.package);
-    if (!img || !form.device) return '';
-    const hw = form.device.replace(/[^\w]+/g, '_').replace(/^_|_$/g, '');
-    return `PT_${hw.charAt(0).toUpperCase()}${hw.slice(1)}_API_${img.api_level ?? img.api_id.replace('android-', '')}`;
   };
 
   if (!ready) {
@@ -199,60 +178,16 @@ export function SdkPanel({ tools, jobs, onChanged, id }: { tools: ToolStatus | n
         <Stack gap="5">
           <Stack gap="3">
             <SubHeading>Create an emulator (AVD)</SubHeading>
-            {installed === null ? (
-              <Loading rows={3} height="8" />
-            ) : installed.length === 0 ? (
-              <Text fontSize="sm" color="fg.muted">
-                No system image installed yet — download one first.
-              </Text>
-            ) : (
-              <form onSubmit={create}>
-                <Stack gap="3">
-                  <Field.Root required>
-                    <Field.Label>System image</Field.Label>
-                    <Select value={form.package} onChange={(v) => setForm({ ...form, package: v })}>
-                      {installed.map((i) => (
-                        <option key={i.package} value={i.package} disabled={!i.host_compatible}>
-                          Android {i.android_version ?? '?'} (API {i.api_level ?? i.api_id}) · {i.tag_label} · {i.abi}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field.Root>
-                  <Field.Root required>
-                    <Field.Label>Hardware profile</Field.Label>
-                    <Select value={form.device} onChange={(v) => setForm({ ...form, device: v })} disabled={!definitions.length}>
-                      {definitions.length === 0 && <option value="">Loading…</option>}
-                      {definitions.map((d) => (
-                        <option key={d} value={d}>
-                          {d}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field.Root>
-                  <Field.Root required>
-                    <Field.Label>AVD name</Field.Label>
-                    <HStack w="100%">
-                      <Input size="sm" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={suggestName() || 'PT_Pixel_8_API_35'} pattern="[\w.\-]+" required />
-                      <Button size="sm" variant="outline" type="button" onClick={() => setForm({ ...form, name: suggestName() })} disabled={!suggestName()}>
-                        Suggest
-                      </Button>
-                    </HStack>
-                  </Field.Root>
-                  <Checkbox.Root size="sm" checked={form.create_profile} onCheckedChange={(e) => setForm({ ...form, create_profile: !!e.checked })}>
-                    <Checkbox.HiddenInput />
-                    <Checkbox.Control />
-                    <Checkbox.Label>Also add a device profile</Checkbox.Label>
-                  </Checkbox.Root>
-                  <Button type="submit" size="sm" alignSelf="flex-start" loading={busy === 'create'} disabled={!form.package || !form.device}>
-                    Create AVD
-                  </Button>
-                </Stack>
-              </form>
-            )}
+            <CreateAvdForm onCreated={() => onChanged()} />
           </Stack>
 
           <Stack gap="2">
             <SubHeading>Installed system images</SubHeading>
+            {installed && installed.some((i) => !i.used_by?.length) && (
+              <Text fontSize="xs" color="fg.muted">
+                {fmtBytes(installed.filter((i) => !i.used_by?.length).reduce((s, i) => s + (i.disk_bytes ?? 0), 0))} is in images no AVD uses — delete them to free space.
+              </Text>
+            )}
             {installed === null ? (
               <Loading rows={2} />
             ) : installed.length === 0 ? (
@@ -270,8 +205,12 @@ export function SdkPanel({ tools, jobs, onChanged, id }: { tools: ToolStatus | n
                           (API {i.api_level ?? i.api_id}) · {i.tag_label}
                         </Text>
                       </Text>
-                      <Text fontSize="xs" color="fg.muted" fontFamily="mono">
-                        {i.abi}
+                      <Text fontSize="xs" color="fg.muted">
+                        <Text as="span" fontFamily="mono">
+                          {i.abi}
+                        </Text>
+                        {' · '}
+                        {i.used_by?.length ? `used by ${i.used_by.join(', ')}` : <Text as="span" color="fg.warning">not used by any AVD</Text>}
                       </Text>
                     </Box>
                     <HStack gap="2">
@@ -283,6 +222,17 @@ export function SdkPanel({ tools, jobs, onChanged, id }: { tools: ToolStatus | n
                       <Text fontSize="xs" className="num" color="fg.muted" title="Size on disk">
                         {i.disk_bytes ? fmtBytes(i.disk_bytes) : ''}
                       </Text>
+                      <IconButton
+                        size="2xs"
+                        variant="ghost"
+                        colorPalette="red"
+                        aria-label={`Delete system image ${i.package}`}
+                        title={i.used_by?.length ? `Delete (used by ${i.used_by.join(', ')})` : 'Delete this image to free disk space'}
+                        loading={removing === i.package || pendingRemove.has(i.package)}
+                        onClick={() => void removeImage(i)}
+                      >
+                        <LuTrash2 />
+                      </IconButton>
                     </HStack>
                   </Flex>
                 ))}

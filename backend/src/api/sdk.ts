@@ -14,6 +14,7 @@ const avdBody = z.object({
   package: z.string().min(1).max(120),
   device: z.string().min(1).max(60),
   create_profile: z.boolean().default(true),
+  ram_mb: z.number().int().min(1024).max(8192).optional(),
 });
 
 export async function sdkRoutes(app: FastifyInstance) {
@@ -49,6 +50,7 @@ export async function sdkRoutes(app: FastifyInstance) {
           avd_name: body.name,
           api_level: api ?? undefined,
           android_version: api ? (ANDROID_NAMES[api] ?? undefined) : undefined,
+          ram_mb: body.ram_mb,
           enabled: true,
         }),
       );
@@ -58,6 +60,16 @@ export async function sdkRoutes(app: FastifyInstance) {
   });
 
   app.delete<{ Params: { name: string } }>('/sdk/avds/:name', async (req) => sdkManager.deleteAvd(req.params.name));
+
+  /** Reset an AVD to factory state — frees its user data, cache and fast-boot snapshot. */
+  app.post<{ Params: { name: string } }>('/sdk/avds/:name/wipe', async (req) => sdkManager.wipeAvd(req.params.name));
+
+  /** Delete an installed system image to free disk space (409 while AVDs use it, unless force). */
+  app.post('/sdk/images/uninstall', async (req, reply) => {
+    const body = z.object({ package: z.string().min(1).max(120), force: z.boolean().optional() }).parse(req.body);
+    reply.code(202);
+    return sdkManager.uninstallImage(body.package, { force: body.force });
+  });
 
   /** Where AVDs live, their sizes, and free space on the AVD and SDK drives. */
   app.get('/sdk/storage', async () => sdkManager.storageInfo());

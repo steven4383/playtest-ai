@@ -7,7 +7,8 @@ import { config } from '../config.js';
 import { writeEnv } from '../core/env-file.js';
 import { bus } from '../core/events.js';
 import { newId } from '../db/index.js';
-import { emulatorManager } from './emulator.js';
+import { adb } from './adb.js';
+import { avdDataDir, emulatorManager } from './emulator.js';
 import { avdHome, hostAbi, runSdkTool, sdkRoot, tools } from './sdk.js';
 
 const isWin = process.platform === 'win32';
@@ -30,11 +31,13 @@ export interface SystemImage {
   download_bytes?: number | null;
   /** Size on disk, for installed images. */
   disk_bytes?: number | null;
+  /** AVDs that boot from this image (installed images only). */
+  used_by?: string[];
 }
 
 export interface SdkJob {
   id: string;
-  kind: 'install_image' | 'create_avd' | 'provision' | 'move_avds' | 'move_images';
+  kind: 'install_image' | 'uninstall_image' | 'create_avd' | 'provision' | 'move_avds' | 'move_images';
   title: string;
   status: 'queued' | 'running' | 'done' | 'error';
   step: string;
@@ -65,6 +68,14 @@ export interface AvdLocation {
   in_storage_dir: boolean;
   in_use: boolean;
   exists: boolean;
+  /** System image package this AVD boots (from config.ini). */
+  image: string | null;
+  /** Bytes "Wipe data" would free (user data, cache, snapshots). */
+  wipeable_bytes: number;
+  /** Of which the fast-boot snapshot. */
+  snapshot_bytes: number;
+  ram_mb: number | null;
+  data_partition: string | null;
 }
 
 export interface StorageInfo {
@@ -112,15 +123,6 @@ async function dirSize(dir: string): Promise<number> {
 const samePath = (a: string, b: string) => (isWin ? a.toLowerCase() === b.toLowerCase() : a === b);
 const sameDrive = (a: string, b: string) => samePath(path.parse(path.resolve(a)).root, path.parse(path.resolve(b)).root);
 
-/** A running emulator (ours or Android Studio's) leaves *.lock entries in the AVD folder. */
-function avdLocked(dataPath: string): boolean {
-  try {
-    return fs.readdirSync(dataPath).some((n) => n.endsWith('.lock'));
-  } catch {
-    return false;
-  }
-}
-
 /** Copy a folder tree, reporting bytes as they are written. */
 async function copyDir(src: string, dst: string, onBytes: (n: number) => void) {
   await fsp.mkdir(dst, { recursive: true });
@@ -147,6 +149,69 @@ function rewriteIni(iniPath: string, dataPath: string) {
   const lines = text.split(/\r?\n/).filter((l) => l && !l.startsWith('path=') && !l.startsWith('path.rel='));
   lines.splice(1, 0, `path=${dataPath}`);
   fs.writeFileSync(iniPath, lines.join(eol) + eol);
+}
+
+/** key=value lines of an AVD .ini / config.ini. */
+function readIni(p: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    for (const line of fs.readFileSync(p, 'utf8').split(/\r?\n/)) {
+      const i = line.indexOf('=');
+      if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+  } catch {
+    /* missing */
+  }
+  return out;
+}
+
+/** Set keys in an AVD config.ini, keeping every other line. */
+function patchIni(p: string, updates: Record<string, string>) {
+  const text = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const sep = /^[\w.]+ = /m.test(text) ? ' = ' : '='; // keep the file's style (avdmanager writes "key = value")
+  const lines = text.split(/\r?\n/).filter((l) => l !== '');
+  for (const [k, v] of Object.entries(updates)) {
+    const i = lines.findIndex((l) => l.split('=')[0].trim() === k);
+    if (i >= 0) lines[i] = `${k}${sep}${v}`;
+    else lines.push(`${k}${sep}${v}`);
+  }
+  fs.writeFileSync(p, lines.join(eol) + eol);
+}
+
+/** image.sysdir.1=system-images\android-35\google_apis\x86_64\ → system-images;android-35;google_apis;x86_64 */
+function imageOfConfig(cfg: Record<string, string>): string | null {
+  const parts = (cfg['image.sysdir.1'] ?? '').replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[0] === 'system-images' && parts.length >= 4 ? `system-images;${parts[1]};${parts[2]};${parts[3]}` : null;
+}
+
+/**
+ * What "Wipe data" removes from an AVD folder: the files the emulator creates on first boot (user data, cache,
+ * encryption key, snapshots, runtime state). config.ini and the SD card stay, so the AVD boots like new.
+ */
+const WIPE_RE = /^(userdata-qemu\.img(\.qcow2)?|cache\.img(\.qcow2)?|encryptionkey\.img(\.qcow2)?|snapshots|multiinstance\.lock|hardware-qemu\.ini(\.lock)?|[\w.-]+\.lock|quickbootChoice\.ini|bootcompleted\.ini|read-snapshot\.txt|emu-launch-params\.txt|tmpAdbCmds|data|modem_simulator)$/i;
+
+async function wipeTargets(dataPath: string): Promise<{ path: string; bytes: number }[]> {
+  const entries = await fsp.readdir(dataPath, { withFileTypes: true }).catch(() => []);
+  return Promise.all(
+    entries
+      .filter((e) => WIPE_RE.test(e.name))
+      .map(async (e) => {
+        const p = path.join(dataPath, e.name);
+        return { path: p, bytes: e.isDirectory() ? await dirSize(p) : (await fsp.stat(p).catch(() => ({ size: 0 }))).size };
+      }),
+  );
+}
+
+/** Remove empty parent folders up to (not including) `stop`. */
+function pruneEmptyDirs(from: string, stop: string) {
+  for (let d = from; d.length > stop.length && !samePath(d, stop); d = path.dirname(d)) {
+    try {
+      fs.rmdirSync(d);
+    } catch {
+      break; // not empty
+    }
+  }
 }
 
 export const ANDROID_NAMES: Record<number, string> = {
@@ -263,13 +328,112 @@ export const sdkManager = {
     const root = sdkRoot();
     const list = this.installedImages();
     if (!root) return list;
-    const sizes = await repoSizes().catch(() => new Map<string, number>());
+    const [sizes, usage] = await Promise.all([repoSizes().catch(() => new Map<string, number>()), this.imageUsage()]);
     return Promise.all(
       list.map(async (i) => {
         const [, api, tag, abi] = i.package.split(';');
-        return { ...i, disk_bytes: await dirSize(path.join(root, 'system-images', api, tag, abi)), download_bytes: sizes.get(i.package) ?? null };
+        return {
+          ...i,
+          disk_bytes: await dirSize(path.join(root, 'system-images', api, tag, abi)),
+          download_bytes: sizes.get(i.package) ?? null,
+          used_by: usage[i.package] ?? [],
+        };
       }),
     );
+  },
+
+  /** Every AVD (from the .ini pointers in the AVD home) with its data folder and config.ini. */
+  avdConfigs(): { name: string; ini_path: string; data_path: string; config: Record<string, string> }[] {
+    const home = avdHome();
+    if (!fs.existsSync(home)) return [];
+    return fs
+      .readdirSync(home)
+      .filter((n) => n.endsWith('.ini'))
+      .map((f) => {
+        const name = f.slice(0, -4);
+        const iniPath = path.join(home, f);
+        const ini = readIni(iniPath);
+        const dataPath =
+          ini.path && fs.existsSync(ini.path) ? ini.path : ini['path.rel'] ? path.join(path.dirname(home), ini['path.rel']) : path.join(home, `${name}.avd`);
+        return { name, ini_path: iniPath, data_path: dataPath, config: readIni(path.join(dataPath, 'config.ini')) };
+      });
+  },
+
+  /** System image package → AVDs that boot from it. */
+  async imageUsage(): Promise<Record<string, string[]>> {
+    const out: Record<string, string[]> = {};
+    for (const a of this.avdConfigs()) {
+      const img = imageOfConfig(a.config);
+      if (img) (out[img] ??= []).push(a.name);
+    }
+    return out;
+  },
+
+  /**
+   * Delete an installed system image (sdkmanager --uninstall) to free disk space. Refused while an AVD that boots from
+   * it is running; refused while any AVD uses it unless `force` (those AVDs stop working until the image is downloaded again).
+   */
+  async uninstallImage(pkg: string, opts: { force?: boolean } = {}): Promise<SdkJob> {
+    if (!PKG_RE.test(pkg)) throw Object.assign(new Error(`Invalid system image package: ${pkg}`), { statusCode: 400 });
+    const root = sdkRoot();
+    if (!root) throw Object.assign(new Error('Android SDK not found'), { statusCode: 412 });
+    const leaf = imageLeaves(root).find((l) => l.package === pkg);
+    if (!leaf) throw Object.assign(new Error(`${pkg} is not installed`), { statusCode: 404 });
+    const users = (await this.imageUsage())[pkg] ?? [];
+    const runningAvds = await this.runningAvdNames();
+    const busy = users.filter((u) => runningAvds.has(u));
+    if (busy.length) throw Object.assign(new Error(`Stop ${busy.join(', ')} first — it is running from this image`), { statusCode: 409 });
+    if (users.length && !opts.force)
+      throw Object.assign(new Error(`Used by ${users.join(', ')}. Those emulators stop working until the image is downloaded again — delete them first, or delete anyway.`), {
+        statusCode: 409,
+        used_by: users,
+      });
+    const bin = requireTool('sdkmanager');
+    return enqueue('uninstall_image', `Delete ${pkg}`, async (job, update) => {
+      const size = await dirSize(leaf.real_path);
+      update({ step: `Removing ${pkg}`, progress: null });
+      const r = await runSdkTool(bin, ['--uninstall', pkg], { timeoutMs: 300_000, onLine: lineLogger(job, update, 'Removing: ') });
+      if (!r.ok) job.log.push(`sdkmanager: ${r.error} — removing the folder directly`);
+      // sdkmanager removes the folder (and the junction for images kept on another drive); finish anything it left.
+      if (isLink(leaf.sdk_path)) fs.unlinkSync(leaf.sdk_path);
+      else if (fs.existsSync(leaf.sdk_path)) await fsp.rm(leaf.sdk_path, { recursive: true, force: true });
+      if (leaf.linked && fs.existsSync(leaf.real_path) && imagesStorage.dir && leaf.real_path.toLowerCase().startsWith(imagesStorage.dir.toLowerCase() + path.sep)) {
+        await fsp.rm(leaf.real_path, { recursive: true, force: true });
+        pruneEmptyDirs(path.dirname(leaf.real_path), imagesStorage.dir);
+      }
+      pruneEmptyDirs(path.dirname(leaf.sdk_path), path.join(root, 'system-images'));
+      if (sdkManager.installedImages().some((i) => i.package === pkg)) throw new Error(`Could not remove ${pkg}: ${r.error ?? 'files are still on disk'}`);
+      job.log.push(`Freed ${(size / 1024 ** 3).toFixed(2)} GB`);
+      return { package: pkg, freed_bytes: size, broken_avds: users };
+    });
+  },
+
+  /** AVD names running right now: ours plus any other emulator ADB can see (asked with `adb emu avd name`). */
+  async runningAvdNames(): Promise<Set<string>> {
+    const names = new Set(emulatorManager.list().map((r) => r.avd_name));
+    const { devices } = await adb.devices();
+    for (const d of devices) {
+      if (!d.is_emulator || d.state !== 'device') continue;
+      const n = await adb.emulatorAvdName(d.serial).catch(() => null);
+      if (n) names.add(n);
+    }
+    return names;
+  },
+
+  /** "Wipe data": reset an AVD to factory state and free its user data, cache and snapshots. The next start is a fresh first boot. */
+  async wipeAvd(name: string) {
+    if (!AVD_RE.test(name)) throw Object.assign(new Error(`Invalid AVD name: ${name}`), { statusCode: 400 });
+    const avd = this.avdConfigs().find((a) => a.name === name);
+    if (!avd || !fs.existsSync(avd.data_path)) throw Object.assign(new Error(`AVD ${name} not found`), { statusCode: 404 });
+    if ((await this.runningAvdNames()).has(name))
+      throw Object.assign(new Error('Stop the running emulator before wiping its data'), { statusCode: 409 });
+    const targets = await wipeTargets(avd.data_path);
+    let freed = 0;
+    for (const t of targets) {
+      await fsp.rm(t.path, { recursive: true, force: true });
+      freed += t.bytes;
+    }
+    return { wiped: name, freed_bytes: freed, removed: targets.map((t) => path.basename(t.path)) };
   },
 
   /** Fast: scans <sdk>/system-images on disk, no network. */
@@ -365,7 +529,7 @@ export const sdkManager = {
   },
 
   /** `onDone` runs after the AVD exists (e.g. to add a device profile); its failure is logged, not fatal. */
-  createAvd(input: { name: string; package: string; device: string }, onDone?: () => void): SdkJob {
+  createAvd(input: AvdInput, onDone?: () => void): SdkJob {
     validateAvdInput(input);
     const bin = requireTool('avdmanager');
     return enqueue('create_avd', `Create AVD ${input.name}`, async (job, update) => {
@@ -428,7 +592,8 @@ export const sdkManager = {
   async avdLocations(): Promise<AvdLocation[]> {
     const home = avdHome();
     if (!fs.existsSync(home)) return [];
-    const running = new Set(emulatorManager.list().map((r) => r.avd_name));
+    // Lock files are unreliable (a killed emulator leaves them, a running one may only have multiinstance.lock): ask ADB.
+    const running = await this.runningAvdNames().catch(() => new Set(emulatorManager.list().map((r) => r.avd_name)));
     const out: AvdLocation[] = [];
     for (const f of fs.readdirSync(home).filter((n) => n.endsWith('.ini'))) {
       const iniPath = path.join(home, f);
@@ -438,14 +603,23 @@ export const sdkManager = {
       const rel = ini.match(/^path\.rel=(.+)$/m)?.[1]?.trim();
       const dataPath = p && fs.existsSync(p) ? p : rel ? path.join(path.dirname(home), rel) : path.join(home, `${name}.avd`);
       const exists = fs.existsSync(dataPath);
+      const cfg = exists ? readIni(path.join(dataPath, 'config.ini')) : {};
+      const ramM = String(cfg['hw.ramSize'] ?? '').match(/^(\d+)\s*([MG])?/i);
+      const ram = ramM ? Number(ramM[1]) * (ramM[2]?.toUpperCase() === 'G' ? 1024 : 1) : 0;
+      const wipe = exists ? await wipeTargets(dataPath) : [];
       out.push({
         name,
         ini_path: iniPath,
         data_path: dataPath,
         size_bytes: exists ? await dirSize(dataPath) : 0,
         in_storage_dir: !!avdStorage.dir && samePath(path.dirname(path.resolve(dataPath)), avdStorage.dir),
-        in_use: running.has(name) || (exists && avdLocked(dataPath)),
+        in_use: running.has(name),
         exists,
+        image: imageOfConfig(cfg),
+        wipeable_bytes: wipe.reduce((s, t) => s + t.bytes, 0),
+        snapshot_bytes: wipe.filter((t) => path.basename(t.path) === 'snapshots').reduce((s, t) => s + t.bytes, 0),
+        ram_mb: ram || null,
+        data_partition: cfg['disk.dataPartition.size'] ?? null,
       });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -583,7 +757,7 @@ function moveAvdsJob(avds: AvdLocation[], target: string): SdkJob {
     const skipped: string[] = [];
     for (const a of avds) {
       // Re-check right before moving: an emulator may have started since the job was queued.
-      if (emulatorManager.list().some((r) => r.avd_name === a.name) || avdLocked(a.data_path)) {
+      if ((await sdkManager.runningAvdNames()).has(a.name)) {
         job.log.push(`Skipped ${a.name}: emulator is running (stop it and move again)`);
         skipped.push(a.name);
         done += a.size_bytes;
@@ -623,10 +797,20 @@ function moveAvdsJob(avds: AvdLocation[], target: string): SdkJob {
   });
 }
 
-function validateAvdInput(input: { name: string; package: string; device: string }) {
+export interface AvdInput {
+  name: string;
+  package: string;
+  device: string;
+  /** Guest RAM (hw.ramSize). */
+  ram_mb?: number;
+}
+
+function validateAvdInput(input: AvdInput) {
   if (!AVD_RE.test(input.name)) throw Object.assign(new Error('AVD name: letters, digits, _ . - only'), { statusCode: 400 });
   if (!PKG_RE.test(input.package)) throw Object.assign(new Error(`Invalid system image package: ${input.package}`), { statusCode: 400 });
   if (!HW_RE.test(input.device)) throw Object.assign(new Error(`Invalid hardware profile: ${input.device}`), { statusCode: 400 });
+  if (input.ram_mb !== undefined && (!Number.isInteger(input.ram_mb) || input.ram_mb < 1024 || input.ram_mb > 8192))
+    throw Object.assign(new Error('RAM must be 1024–8192 MB'), { statusCode: 400 });
 }
 
 async function doInstall(bin: string, pkg: string, job: SdkJob, update: (p: Partial<SdkJob>) => void) {
@@ -638,7 +822,7 @@ async function doInstall(bin: string, pkg: string, job: SdkJob, update: (p: Part
     throw new Error(`sdkmanager finished but ${pkg} is not on disk — check the job log (license not accepted or package unavailable?)`);
 }
 
-async function doCreateAvd(bin: string, input: { name: string; package: string; device: string }, job: SdkJob, update: (p: Partial<SdkJob>) => void) {
+async function doCreateAvd(bin: string, input: AvdInput, job: SdkJob, update: (p: Partial<SdkJob>) => void) {
   validateAvdInput(input);
   const existing = await emulatorManager.listAvds();
   if (existing.avds.includes(input.name)) throw new Error(`An AVD named ${input.name} already exists`);
@@ -664,6 +848,15 @@ async function doCreateAvd(bin: string, input: { name: string; package: string; 
   if (!r.ok) throw new Error(`avdmanager create failed: ${r.error}`);
   const after = await emulatorManager.listAvds();
   if (!after.avds.includes(input.name)) throw new Error(`avdmanager finished but ${input.name} is not listed by the emulator`);
+  // Settings avdmanager has no flags for: RAM and typing with the PC keyboard. (disk.dataPartition.size is not
+  // offered: the emulator resets it to the system image's default on first boot.)
+  const dataPath = avdDataDir(input.name);
+  if (dataPath) {
+    const updates: Record<string, string> = { 'hw.keyboard': 'yes' };
+    if (input.ram_mb) updates['hw.ramSize'] = `${input.ram_mb}M`;
+    patchIni(path.join(dataPath, 'config.ini'), updates);
+    job.log.push(`config.ini: ${Object.entries(updates).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+  }
 }
 
 /** Map preset AVD names (PT_Pixel_8_API_35, PT_Tablet_API_30 …) to avdmanager hardware ids. */

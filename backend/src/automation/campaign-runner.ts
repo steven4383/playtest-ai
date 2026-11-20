@@ -392,12 +392,16 @@ async function prepareDevice(ctx: Ctx, device: DeviceRow, onStarted: () => void)
     onStarted();
   }
 
+  // The emulator manager decides when a boot has failed (it allows more time when a fast boot falls back to a cold
+  // boot on a busy PC); this wait only has a generous safety cap.
   const booted = await waitFor(ctx, () => {
     const e = emulatorManager.get(device.id);
     if (!e) throw new StepFail(deviceRepo.get(device.id)?.last_error ?? 'Emulator exited during boot', 'error');
+    const failed = emulatorManager.bootFailed(device.id);
+    if (failed) throw new StepFail(failed, 'error');
     return e.booted;
-  }, (config.DEVICE_BOOT_TIMEOUT_SECONDS + 10) * 1000);
-  if (!booted) throw new StepFail(`Emulator did not finish booting in ${config.DEVICE_BOOT_TIMEOUT_SECONDS}s`, 'error');
+  }, Math.max(config.DEVICE_BOOT_TIMEOUT_SECONDS + 10, 15 * 60) * 1000);
+  if (!booted) throw new StepFail('Emulator did not finish booting in 15 minutes', 'error');
 
   const serial = emulatorManager.get(device.id)!.serial;
   const pmReady = await waitFor(ctx, () => adb.packageManagerReady(serial), 90_000, 2000);

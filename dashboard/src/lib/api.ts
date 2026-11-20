@@ -15,6 +15,18 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** Start a profile's emulator. When the PC is short on free RAM the backend refuses — then ask before forcing it. Null = user said no. */
+export async function startEmulatorProfile(id: string, query = ''): Promise<{ serial: string } | null> {
+  const url = (force: boolean) => `/devices/${id}/start?${[query, force ? 'force=true' : ''].filter(Boolean).join('&')}`;
+  try {
+    return await api<{ serial: string }>(url(false), { method: 'POST', body: '{}' });
+  } catch (e: any) {
+    if (!/Not enough free RAM/.test(e?.message ?? '')) throw e;
+    if (!confirm(`${e.message}\n\nStart anyway? The PC may slow down while it runs.`)) return null;
+    return api<{ serial: string }>(url(true), { method: 'POST', body: '{}' });
+  }
+}
+
 export interface GpuInfo {
   model: string;
   vendor: string;
@@ -124,6 +136,8 @@ export interface SystemImage {
   download_bytes?: number | null;
   /** Size on disk (installed images). */
   disk_bytes?: number | null;
+  /** AVDs that boot from this image (installed images). */
+  used_by?: string[];
 }
 
 export interface AvdLocation {
@@ -134,6 +148,14 @@ export interface AvdLocation {
   in_storage_dir: boolean;
   in_use: boolean;
   exists: boolean;
+  /** System image package the AVD boots. */
+  image: string | null;
+  /** Bytes "Wipe data" frees (user data, cache, snapshots). */
+  wipeable_bytes: number;
+  snapshot_bytes: number;
+  ram_mb: number | null;
+  /** disk.dataPartition.size as written in config.ini (bytes or e.g. "6G"). */
+  data_partition: string | null;
 }
 
 export interface StorageInfo {
@@ -171,7 +193,7 @@ export interface QrSession {
 
 export interface SdkJob {
   id: string;
-  kind: 'install_image' | 'create_avd' | 'provision' | 'move_avds' | 'move_images';
+  kind: 'install_image' | 'uninstall_image' | 'create_avd' | 'provision' | 'move_avds' | 'move_images';
   title: string;
   status: 'queued' | 'running' | 'done' | 'error';
   step: string;
@@ -337,6 +359,77 @@ export interface EmulatorSpeed {
   fast_boot: boolean;
   headless_default: boolean;
   host_threads: number;
+  /** Last measured boot time per AVD and boot kind, in seconds. */
+  boot_times?: Record<string, Partial<Record<'fast' | 'cold' | 'first', number>>>;
+}
+
+/** Emulator boot progress (0-100) from GET /emulators/boot and `boot_progress` events. */
+export interface BootProgress {
+  device_id: string;
+  serial: string;
+  avd_name: string;
+  progress: number;
+  phase: string | null;
+  mode: 'fast' | 'cold' | 'first' | null;
+  elapsed_s: number;
+  eta_s: number | null;
+  booted: boolean;
+}
+
+export interface MemProcess {
+  name: string;
+  package: string | null;
+  pid: number | null;
+  mb: number;
+  group: string;
+  closable: boolean;
+}
+
+/** RAM of one device (GET /adb/devices/:serial/memory). */
+export interface DeviceMemory {
+  serial: string;
+  total_mb: number | null;
+  available_mb: number | null;
+  used_pct: number | null;
+  swap_total_mb: number;
+  swap_used_mb: number;
+  groups: { name: string; mb: number }[];
+  top: MemProcess[];
+  closable: { package: string; mb: number; processes: number; group: string }[];
+  closable_mb: number;
+  foreground: string | null;
+  busy: boolean;
+}
+
+export interface FreeMemoryResult {
+  before_mb: number | null;
+  after_mb: number | null;
+  freed_mb: number | null;
+  stopped: string[];
+  skipped: string[];
+}
+
+/** RAM of this PC, per emulator and per app (GET /system/ram). */
+export interface HostRam {
+  total_mb: number;
+  available_mb: number;
+  used_pct: number | null;
+  emulators: {
+    device_id: string;
+    avd_name: string;
+    serial: string;
+    booted: boolean;
+    headless: boolean | null;
+    adopted: boolean;
+    pid: number | null;
+    mem_mb: number | null;
+    guest_ram_mb: number;
+    idle_s: number;
+    busy: boolean;
+    flutter: boolean;
+  }[];
+  top: { label: string; mb: number; count: number; tip?: string }[];
+  idle_stop_minutes: number;
 }
 
 export interface LlmStatus {

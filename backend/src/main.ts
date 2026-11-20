@@ -21,11 +21,13 @@ import { devtoolsRoutes } from './api/devtools.js';
 import { devkitRoutes } from './api/devkit.js';
 import { devkit } from './automation/devkit.js';
 import { flutterRoutes } from './api/flutter.js';
+import { playRoutes } from './api/play.js';
 import { flutterRunner } from './automation/flutter-run.js';
 import { campaignRunner } from './automation/campaign-runner.js';
 import { campaignRepo } from './services/campaigns.js';
 import { emulatorManager } from './automation/emulator.js';
 import { systemMonitor } from './services/system-monitor.js';
+import { startIdleWatcher } from './services/ram-saver.js';
 
 const app = Fastify({
   logger: {
@@ -47,6 +49,12 @@ await app.register(multipart, { limits: { fileSize: config.MAX_APK_SIZE_MB * 102
 
 app.get('/api/v1/health', async () => ({ status: 'ok', version: '0.1.0', uptime_s: Math.round(process.uptime()) }));
 
+// RAM saver: any per-device request (live screen, input, tools) counts as "in use". Thumbnails (?thumb=1) don't.
+app.addHook('onRequest', async (req) => {
+  const m = req.url.match(/^\/api\/v1\/adb\/devices\/([^/?]+)\//);
+  if (m && !/[?&]thumb=1\b/.test(req.url)) emulatorManager.touch(decodeURIComponent(m[1]));
+});
+
 await app.register(
   async (api) => {
     await api.register(systemRoutes);
@@ -59,6 +67,7 @@ await app.register(
     await api.register(devtoolsRoutes);
     await api.register(devkitRoutes);
     await api.register(flutterRoutes);
+    await api.register(playRoutes);
   },
   { prefix: '/api/v1' },
 );
@@ -83,7 +92,9 @@ if (backfilled) app.log.info(`Created ${backfilled} bug report(s) from earlier t
 await systemMonitor.start();
 // Re-attach emulators that kept running across a backend restart, and notice ones closed elsewhere.
 await emulatorManager.sync().catch(() => {});
-setInterval(() => void emulatorManager.sync().catch(() => {}), 10_000).unref();
+// Every 4 s, so an emulator started from a terminal shows its boot progress almost from the start.
+setInterval(() => void emulatorManager.sync().catch(() => {}), 4_000).unref();
+startIdleWatcher();
 const cap = systemMonitor.capacity();
 const info = systemMonitor.info();
 app.log.info(

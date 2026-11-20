@@ -37,6 +37,13 @@ export async function devkitRoutes(app: FastifyInstance) {
   app.get<S>('/adb/devices/:serial/info', async (req) => devkit.info(req.params.serial));
   app.post<S>('/adb/devices/:serial/wireless', async (req) => devkit.toWireless(req.params.serial));
 
+  // ---- RAM saver (device)
+  app.get<S>('/adb/devices/:serial/memory', async (req) => devkit.memory(req.params.serial));
+  app.post<S>('/adb/devices/:serial/memory/free', async (req) => {
+    const body = z.object({ packages: z.array(z.string().max(200)).max(100).default([]) }).parse(req.body ?? {});
+    return devkit.freeMemory(req.params.serial, body.packages);
+  });
+
   // ---- apps
   app.get<S>('/adb/devices/:serial/foreground', async (req) => ({ package: await adb.foregroundPackage(req.params.serial) }));
   app.get<S & { Querystring: { system?: string } }>('/adb/devices/:serial/apps', async (req) => ({

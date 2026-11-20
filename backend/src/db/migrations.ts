@@ -182,4 +182,32 @@ export const migrations: { version: number; name: string; sql: string }[] = [
       CREATE INDEX idx_bug_campaign ON bugs(campaign_id);
     `,
   },
+  {
+    version: 4,
+    name: 'play_closed_testing',
+    sql: `
+      CREATE TABLE play_tests (
+        package_name TEXT PRIMARY KEY,
+        opt_in_url TEXT,
+        required_testers INTEGER NOT NULL DEFAULT 12,
+        required_days INTEGER NOT NULL DEFAULT 14,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE play_testers (
+        id TEXT PRIMARY KEY,
+        package_name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        name TEXT,
+        device TEXT,
+        status TEXT NOT NULL DEFAULT 'invited',
+        invited_at TEXT NOT NULL,
+        opted_in_at TEXT,
+        left_at TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (package_name, email)
+      );
+      CREATE INDEX idx_play_testers_pkg ON play_testers(package_name);
+    `,
+  },
 ];

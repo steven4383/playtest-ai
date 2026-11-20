@@ -59,8 +59,12 @@ and build Flutter apps faster, all from one dashboard on your own PC.
 | | Feature | What you get |
 |---|---|---|
 | 🧩 | **Device Manager** | 12 ready profiles, start / stop, health checks, installed AVDs, live ADB list, **Add as profile** for phones. |
-| ⬇️ | **System images & AVDs** | Browse Google's catalog with download sizes, download with live progress, create / delete AVDs, one-click **Set up** for a profile. |
-| ⚡ | **Fast boot** | The first start saves a clean snapshot; later starts take **~5–10 s instead of 1–2 min**, always from a clean state with animations off. |
+| ⬇️ | **System images & AVDs** | Browse Google's catalog with download sizes, download with live progress, create AVDs (hardware + RAM) from the Developer page or Device Manager, one-click **Set up** for a profile. |
+| 🧹 | **Free disk space** | See which AVDs use each system image and **delete unused images**; **Wipe data** resets an AVD and frees its user data and fast-boot snapshot (often 3–6 GB). |
+| ⚡ | **Fast boot** | The first start saves a clean snapshot; later starts take **~5–10 s instead of 1–2 min**, always from a clean state with animations off. Stale lock files are cleared and a broken snapshot is re-saved by itself. |
+| 📶 | **Boot progress 1 → 100 %** | Every view that shows an emulator shows its boot stage, percentage and time left (learned from its last boots) — never a black box. Screens keep their last frame while loading and offer **Wake screen** when the display is dark. |
+| 🧠 | **RAM saver** | Device Manager → Memory: PC RAM per emulator and app, idle emulators, one-click stop, optional auto-stop of idle headless emulators. Per device: close background apps and cached processes to free RAM. |
+| 👥 | **Play closed testing** | Track the 12 testers × 14 days Google Play needs before production: who is invited / opted in / left, the 14-day clock and the date you can apply, the opt-in link, a ready invite message, and the email list (CSV) for Play Console. Stored locally only. |
 | 👻 | **Headless or windowed** | Test runs boot without a window; the Developer page lets you pick. Headless emulators are watched in the browser or with scrcpy, and **Stop** works for every emulator — even after a backend restart. |
 | 📶 | **Phones over USB, Wi-Fi or QR** | Pair with a QR code or pairing code, switch a USB phone to Wi-Fi, restart ADB. |
 | 💾 | **Any drive** | Keep AVDs and system images on another drive (e.g. `M:`), Android Studio keeps working. |
@@ -148,6 +152,7 @@ Everything lives in `backend/.env` (see `backend/.env.example`).
 | `MAX_CONCURRENT_EMULATORS` | `1` | Emulators that may run at once |
 | `EMULATOR_RAM_MB` | `2048` | RAM per emulator |
 | `EMULATOR_CORES` | `0` (auto) | CPU cores per emulator — auto = half the host threads, 2–4 |
+| `EMULATOR_IDLE_STOP_MINUTES` | `0` (off) | RAM saver: stop headless emulators nobody used for this long (never one with a window, a test run or `flutter run`) |
 | `EMULATOR_GPU_MODE` | `host` | `host`, `swiftshader_indirect`, `angle_indirect`, `auto`, `off` |
 | `EMULATOR_HEADLESS` | `true` | Test runs boot emulators without a window |
 | `EMULATOR_FAST_BOOT` | `true` | Start from the clean `playtest_clean` snapshot |
@@ -258,12 +263,18 @@ All endpoints are under `/api/v1`. Live updates arrive over Server-Sent Events a
 | POST | `/devices/:id/provision` `{accept_licenses: true}` | Download the image if needed + create the AVD |
 | GET | `/adb/devices` · `/emulators/avds` · `/emulators/running` · `/emulators/speed` · `/tools` | Discovery, acceleration and speed settings |
 | POST | `/adb/devices/:serial/emu-stop` | Stop any emulator, also ones started elsewhere |
+| GET | `/emulators/boot` | Boot progress 0–100 %, stage and ETA (live: `boot_progress` events) |
+| GET · POST · PUT | `/system/ram` · `/emulators/stop-idle` · `/emulators/settings` | RAM saver: PC memory per emulator/app, stop idle emulators, auto-stop minutes |
+| GET · POST | `/adb/devices/:serial/memory` · `/adb/devices/:serial/memory/free` | Device RAM by group and app; close background apps |
 | POST | `/adb/pair` `{address, code}` · `/adb/connect` `{address}` · `/adb/restart` | Wi-Fi debugging, ADB restart |
 | POST/GET/DELETE | `/adb/qr-pair` · `/adb/qr-pair/:id` | QR pairing (SVG) / status / cancel |
 | POST | `/adb/devices/:serial/profile` · `/disconnect` | Register a phone / drop a Wi-Fi link |
 | GET | `/sdk/images/installed` · `/sdk/images[?refresh=true]` · `/sdk/device-definitions` | Installed images, catalog with sizes, hardware ids |
 | POST | `/sdk/images/install` `{package, accept_licenses: true}` | Background download (progress via `sdk_job` events) |
-| POST/DELETE | `/sdk/avds` · `/sdk/avds/:name` | Create / delete AVD |
+| POST/DELETE | `/sdk/avds` · `/sdk/avds/:name` | Create (hardware, RAM) / delete AVD |
+| POST | `/sdk/avds/:name/wipe` · `/sdk/images/uninstall` | Wipe an AVD's data · delete a system image (409 while AVDs use it, unless `force`) |
+| GET · PUT · DELETE | `/play/apps` · `/play/:pkg` · `/play/:pkg/settings` | Closed-testing tracker per app: testers, 14-day clock, opt-in link |
+| POST · PATCH · DELETE · GET | `/play/:pkg/testers` · `/play/:pkg/testers/import` · `/play/testers/:id` · `/play/:pkg/testers.csv` | Add / paste / update / remove testers; email list for Play Console |
 | GET | `/sdk/jobs` · `/sdk/jobs/:id` | SDK job status and log |
 | GET/PUT | `/sdk/storage` · `/sdk/storage/images` `{dir \| null}` | AVD and system image locations / move them |
 

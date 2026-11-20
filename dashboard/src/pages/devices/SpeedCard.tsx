@@ -1,8 +1,93 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Code, List, Stack, Text } from '@chakra-ui/react';
-import { LuZap } from 'react-icons/lu';
+import { Box, Code, Flex, HStack, List, NativeSelect, Stack, Text } from '@chakra-ui/react';
+import { LuTerminal, LuZap } from 'react-icons/lu';
 import { api, type EmulatorSpeed } from '../../lib/api';
-import { Badge, Card, Kv, Loading } from '../../components/ui';
+import { useAvds, useTools } from '../../lib/queries';
+import { Badge, Card, CopyButton, Kv, Loading } from '../../components/ui';
+
+/** One command line to copy, with what it does and how fast it starts. */
+function Cmd({ title, speed, tone, cmd, note }: { title: string; speed: string; tone: 'good' | 'warning' | 'critical'; cmd: string; note: string }) {
+  return (
+    <Box borderWidth="1px" borderRadius="md" p="3">
+      <Flex justify="space-between" align="center" gap="2" wrap="wrap">
+        <HStack gap="2">
+          <Text fontSize="sm" fontWeight="medium">
+            {title}
+          </Text>
+          <Badge tone={tone}>{speed}</Badge>
+        </HStack>
+        <CopyButton value={cmd} label="Copy" />
+      </Flex>
+      <Code display="block" whiteSpace="pre-wrap" wordBreak="break-all" fontSize="xs" mt="2" p="2" w="100%">
+        {cmd}
+      </Code>
+      <Text fontSize="xs" color="fg.muted" mt="1.5">
+        {note}
+      </Text>
+    </Box>
+  );
+}
+
+/** Starting emulators from a terminal: the fast way vs. -no-snapshot (cold boot every time). */
+function TerminalCommands({ s }: { s: EmulatorSpeed }) {
+  const avds = useAvds().data ?? [];
+  const sdk = useTools().data?.sdk_root;
+  const [avd, setAvd] = useState('');
+  const name = avd || avds[0] || 'Pixel_Test';
+  const exe = sdk ? `"${sdk}\\emulator\\emulator.exe"` : 'emulator';
+  const common = `-avd ${name} -no-window -no-audio -no-boot-anim -gpu ${s.gpu_mode} -cores ${s.cores} -memory ${s.ram_mb} -netfast`;
+  const t = s.boot_times?.[name];
+  const measured = (v?: number) => (v ? `${Math.round(v)} s here` : null);
+  return (
+    <Stack gap="2">
+      <Flex justify="space-between" align="center" gap="2" wrap="wrap">
+        <HStack gap="2">
+          <LuTerminal />
+          <Text fontSize="sm" fontWeight="medium">
+            Starting an emulator yourself (terminal)
+          </Text>
+        </HStack>
+        {avds.length > 1 && (
+          <NativeSelect.Root size="xs" w="auto">
+            <NativeSelect.Field value={name} onChange={(e) => setAvd(e.target.value)} aria-label="AVD">
+              {avds.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </NativeSelect.Field>
+            <NativeSelect.Indicator />
+          </NativeSelect.Root>
+        )}
+      </Flex>
+      <Text fontSize="xs" color="fg.muted">
+        PlayTest shows the boot progress of emulators started this way too (Developer page, Test runs, live views).
+      </Text>
+      <Cmd
+        title="Fast and clean every time"
+        tone="good"
+        speed={measured(t?.fast) ?? '~5–15 s'}
+        cmd={`${exe} ${common} -snapshot playtest_clean -no-snapshot-save`}
+        note="Resumes the clean snapshot PlayTest saves the first time it starts this AVD (start it once from the dashboard). Nothing you change is kept."
+      />
+      <Cmd
+        title="Fast, keeps its state (Quick Boot)"
+        tone="good"
+        speed="~5–15 s after the first"
+        cmd={`${exe} ${common}`}
+        note="Without -no-snapshot the emulator saves its state when it closes and resumes it next time. Close it with: adb -s emulator-5554 emu kill (closing the process hard skips the save)."
+      />
+      <Cmd
+        title="Your command: -no-snapshot"
+        tone="critical"
+        speed={measured(t?.cold ?? t?.first) ?? '1–3 min'}
+        cmd={`${exe} -avd ${name} -no-window -no-audio -no-boot-anim -no-snapshot`}
+        note="-no-snapshot neither loads nor saves a snapshot, so every start is a full cold boot. It also leaves the GPU, cores and RAM on defaults (headless may fall back to software rendering)."
+      />
+    </Stack>
+  );
+}
 
 /** How emulators are tuned on this PC, and what else helps them run smoothly. */
 export function SpeedCard({ id }: { id?: string }) {
@@ -34,6 +119,7 @@ export function SpeedCard({ id }: { id?: string }) {
               ['Test runs', `${s.headless_default ? 'headless (no window)' : 'with a window'} · animations off · no audio · EMULATOR_HEADLESS`],
             ]}
           />
+          <TerminalCommands s={s} />
           <Stack gap="1">
             <Text fontSize="sm" fontWeight="medium">
               For smoother emulators

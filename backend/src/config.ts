@@ -25,6 +25,8 @@ const schema = z.object({
   EMULATOR_FAST_BOOT: bool.default('true'),
   /** CPU cores per emulator; 0 = auto (half the host threads, 2-4). */
   EMULATOR_CORES: z.coerce.number().int().min(0).max(16).default(0),
+  /** RAM saver: stop headless emulators nobody used for this many minutes; 0 = never. */
+  EMULATOR_IDLE_STOP_MINUTES: z.coerce.number().int().min(0).max(1440).default(0),
   DEVICE_BOOT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(180),
   HOST_RESERVED_RAM_GB: z.coerce.number().positive().default(4.5),
   APPIUM_SERVER_URL: z.string().default('http://127.0.0.1:4723'),

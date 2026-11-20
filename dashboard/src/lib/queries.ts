@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type AdbDevice, type Apk, type Device, type SdkJob, type SystemImage, type ToolStatus } from './api';
+import { api, dev, type AdbDevice, type Apk, type BootProgress, type Device, type DeviceMemory, type HostRam, type SdkJob, type StorageInfo, type SystemImage, type ToolStatus } from './api';
 import type { Live } from './useLive';
 
 /**
@@ -36,6 +36,9 @@ export const qk = {
   flutterAnalysis: (path: string) => ['flutter', 'analysis', path] as const,
   flutterDoctor: ['flutter', 'doctor'] as const,
   deviceInfo: (serial: string) => ['dev', serial, 'info'] as const,
+  deviceMemory: (serial: string) => ['dev', serial, 'memory'] as const,
+  boot: ['emulators', 'boot'] as const,
+  hostRam: ['system', 'ram'] as const,
   deviceApps: (serial: string, system: boolean) => ['dev', serial, 'apps', system] as const,
 };
 
@@ -68,6 +71,21 @@ export const useProfiles = () => useQuery({ queryKey: qk.profiles, queryFn: () =
 export const useAvds = () => useQuery({ queryKey: qk.avds, queryFn: () => api<{ avds: string[] }>('/emulators/avds').then((r) => r.avds) });
 export const useTools = () => useQuery({ queryKey: qk.tools, queryFn: () => api<ToolStatus>('/tools'), staleTime: 5 * 60_000 });
 export const useApks = () => useQuery({ queryKey: qk.apks, queryFn: () => api<Apk[]>('/apks') });
+export const useSdkStorage = (enabled = true) => useQuery({ queryKey: qk.sdkStorage, enabled, staleTime: 2 * 60_000, queryFn: () => api<StorageInfo>('/sdk/storage') });
+
+/** Boot progress of every tracked emulator: loaded once, then kept live by `boot_progress` events. */
+export const useBoot = () => useQuery({ queryKey: qk.boot, staleTime: Infinity, queryFn: () => api<BootProgress[]>('/emulators/boot') });
+/** Boot progress of one emulator (by serial or profile id) while it is still booting, else null. */
+export function useBooting(serial?: string | null, deviceId?: string | null): BootProgress | null {
+  const list = useBoot().data ?? [];
+  return list.find((b) => !b.booted && ((serial && b.serial === serial) || (deviceId && b.device_id === deviceId))) ?? null;
+}
+
+/** PC memory: per emulator and per app. Polled while a page that shows it is open. */
+export const useHostRam = (pollMs = 6000) => useQuery({ queryKey: qk.hostRam, refetchInterval: pollMs, staleTime: 3000, queryFn: () => api<HostRam>('/system/ram') });
+/** Device memory (dumpsys meminfo takes a few seconds, so it only loads when asked). */
+export const useDeviceMemory = (serial: string, enabled: boolean) =>
+  useQuery({ queryKey: qk.deviceMemory(serial), enabled, staleTime: 15_000, queryFn: () => api<DeviceMemory>(dev(serial, '/memory')) });
 
 /** SDK jobs: loaded once, then kept current by `sdk_job` live events (no polling). */
 export const useSdkJobs = () => useQuery({ queryKey: qk.sdkJobs, queryFn: () => api<SdkJob[]>('/sdk/jobs'), staleTime: Infinity });
@@ -122,6 +140,13 @@ export function useLiveCacheSync(live: Live) {
   useEffect(
     () =>
       live.onEvent((e) => {
+        if (e.event === 'boot_progress' && e.device_id && e.serial) {
+          const b = e as unknown as BootProgress;
+          qc.setQueryData<BootProgress[]>(qk.boot, (list = []) => [...list.filter((x) => x.device_id !== b.device_id), b]);
+        }
+        if (e.event === 'device_stopped' || e.event === 'device_error') {
+          qc.setQueryData<BootProgress[]>(qk.boot, (list = []) => list.filter((x) => x.device_id !== e.device_id));
+        }
         if (e.event.startsWith('device_')) {
           void qc.invalidateQueries({ queryKey: qk.adbDevices });
           void qc.invalidateQueries({ queryKey: qk.profiles });

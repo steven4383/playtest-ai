@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { useScreen } from '../../lib/screen';
+import { BootProgressView, DarkScreenHint, DimmedFrame, ScreenLoading } from '../../components/screen';
 import { useQueryClient } from '@tanstack/react-query';
-import { qk, useAdbDevices, useScrcpy } from '../../lib/queries';
-import { Badge as CBadge, Box, Button, Center, CloseButton, Dialog, Flex, HStack, IconButton, Image, Portal, SimpleGrid, Spinner, Stack, Text } from '@chakra-ui/react';
+import { qk, useAdbDevices, useBoot, useBooting, useScrcpy } from '../../lib/queries';
+import { Badge as CBadge, Box, Button, Center, CloseButton, Dialog, Flex, HStack, IconButton, Image, Portal, SimpleGrid, Stack, Text } from '@chakra-ui/react';
 import { LuCable, LuEye, LuMonitorUp, LuPower, LuQrCode, LuRefreshCw, LuRotateCcw, LuSmartphone } from 'react-icons/lu';
-import { API, api, dev, type AdbDevice } from '../../lib/api';
+import { api, dev, type AdbDevice, type BootProgress } from '../../lib/api';
 import type { Live } from '../../lib/useLive';
 import { Card, Loading } from '../../components/ui';
 import { notify } from '../../components/toaster';
@@ -13,47 +15,20 @@ const CONN = { usb: 'USB', wifi: 'Wi-Fi', emulator: 'Emulator' } as const;
 
 /**
  * Auto-refreshing screenshot of one device. Fast (~1.5 s) while a test is running on it, slow otherwise.
- * Sequential fetches, so a slow device never piles up requests; pauses while the browser tab is hidden.
+ * Shares one frame loop per device with every other view, shows the last frame instantly, the boot progress while
+ * an emulator starts, and a "screen is dark" hint instead of a plain black tile.
  */
 export function LiveThumb({ serial, fast, height = '220px', onClick, label }: { serial: string; fast: boolean; height?: string; onClick?: () => void; label: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [error, setError] = useState(false);
-  const fastRef = useRef(fast);
-  fastRef.current = fast;
-  useEffect(() => {
-    let stop = false;
-    let prev: string | null = null;
-    (async () => {
-      while (!stop) {
-        if (document.visibilityState === 'visible') {
-          try {
-            const r = await fetch(`${API}${dev(serial, '/screen')}`, { cache: 'no-store' });
-            if (!r.ok) throw new Error();
-            const url = URL.createObjectURL(await r.blob());
-            if (stop) break;
-            setSrc(url);
-            setError(false);
-            if (prev) URL.revokeObjectURL(prev);
-            prev = url;
-          } catch {
-            setError(true);
-          }
-        }
-        await new Promise((r) => setTimeout(r, fastRef.current ? 1500 : 8000));
-      }
-    })();
-    return () => {
-      stop = true;
-      if (prev) setTimeout(() => URL.revokeObjectURL(prev!), 1000);
-    };
-  }, [serial]);
+  const { frame, lastGood, error } = useScreen(serial, { interval: fast ? 1500 : 8000, thumb: !fast });
+  const boot = useBooting(serial);
+  const dark = !!frame?.black && !boot;
   return (
     <Center
       as={onClick ? 'button' : 'div'}
       onClick={onClick}
       h={height}
       w="100%"
-      bg="gray.950"
+      bg="gray.900"
       borderRadius="lg"
       borderWidth="4px"
       borderColor={fast ? 'orange.solid' : 'gray.800'}
@@ -63,21 +38,40 @@ export function LiveThumb({ serial, fast, height = '220px', onClick, label }: { 
       aria-label={`Screen of ${label}`}
       title={onClick ? 'Open live view (tap / swipe / type)' : undefined}
     >
-      {src ? (
-        <Image src={src} alt={`Screen of ${label}`} h="100%" w="auto" maxW="100%" objectFit="contain" draggable={false} />
+      {boot ? (
+        <>
+          {lastGood && <DimmedFrame url={lastGood.url} />}
+          <BootProgressView boot={boot} compact />
+        </>
+      ) : frame && !dark ? (
+        <Image src={frame.url} alt={`Screen of ${label}`} h="100%" w="auto" maxW="100%" objectFit="contain" draggable={false} />
+      ) : dark ? (
+        <>
+          {lastGood && <DimmedFrame url={lastGood.url} />}
+          <DarkScreenHint compact />
+        </>
       ) : error ? (
-        <Stack align="center" color="gray.500" gap="1" fontSize="xs">
+        <Stack align="center" color="gray.500" gap="1" fontSize="xs" px="2" textAlign="center">
           <LuSmartphone />
           <Text>No screen (locked or busy)</Text>
         </Stack>
       ) : (
-        <Spinner color="gray.400" size="sm" />
+        <ScreenLoading compact />
       )}
       {fast && (
         <CBadge position="absolute" top="1.5" left="1.5" size="xs" colorPalette="orange" variant="solid">
           ● LIVE
         </CBadge>
       )}
+    </Center>
+  );
+}
+
+/** Tile for an emulator that is still booting and not usable over ADB yet. */
+export function BootTile({ boot, height = '220px' }: { boot: BootProgress; height?: string }) {
+  return (
+    <Center h={height} w="100%" bg="gray.900" borderRadius="lg" borderWidth="4px" borderColor="green.700" overflow="hidden">
+      <BootProgressView boot={boot} compact />
     </Center>
   );
 }
@@ -157,8 +151,12 @@ export function LiveDevices({ live, onDevices }: { live: Live; onDevices?: (d: A
     }
   };
 
+  const booting = (useBoot().data ?? []).filter((b) => !b.booted);
+  const bootingSerials = new Set(booting.map((b) => b.serial));
   const ready = (devices ?? []).filter((d) => d.state === 'device');
-  const other = (devices ?? []).filter((d) => d.state !== 'device');
+  const other = (devices ?? []).filter((d) => d.state !== 'device' && !bootingSerials.has(d.serial));
+  // Emulators still booting: ADB lists them as offline (or not at all) until Android is up.
+  const bootOnly = booting.filter((b) => !ready.some((d) => d.serial === b.serial));
   const testing = ready.filter((d) => d.busy).length;
 
   return (
@@ -188,7 +186,7 @@ export function LiveDevices({ live, onDevices }: { live: Live; onDevices?: (d: A
     >
       {devices === null ? (
         <Loading rows={1} height="220px" label="Looking for devices" />
-      ) : ready.length === 0 && other.length === 0 ? (
+      ) : ready.length === 0 && other.length === 0 && bootOnly.length === 0 ? (
         <Flex gap="4" align="center" borderWidth="1px" borderStyle="dashed" borderRadius="lg" p="4" wrap="wrap">
           <Box color="fg.muted" fontSize="2xl">
             <LuCable />
@@ -251,6 +249,17 @@ export function LiveDevices({ live, onDevices }: { live: Live; onDevices?: (d: A
               </Stack>
             );
           })}
+          {bootOnly.map((b) => (
+            <Stack key={b.serial} gap="1.5" minW="0">
+              <BootTile boot={b} />
+              <Text fontSize="sm" fontWeight="medium" truncate title={b.avd_name}>
+                {b.avd_name}
+              </Text>
+              <CBadge size="xs" variant="subtle" colorPalette="green" alignSelf="flex-start">
+                booting {Math.round(b.progress)} %
+              </CBadge>
+            </Stack>
+          ))}
           {other.map((d) => (
             <Stack key={d.serial} gap="1.5" minW="0" opacity={0.7}>
               <Center h="220px" bg="bg.muted" borderRadius="lg" borderWidth="1px" borderStyle="dashed" fontSize="xs" color="fg.muted" textAlign="center" p="3">

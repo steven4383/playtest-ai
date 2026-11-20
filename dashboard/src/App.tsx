@@ -16,6 +16,7 @@ import {
   LuPlay,
   LuSmartphone,
   LuSun,
+  LuUsers,
 } from 'react-icons/lu';
 import { useLive } from './lib/useLive';
 import { useQuery } from '@tanstack/react-query';
@@ -35,6 +36,7 @@ const pages = {
   live: () => import('./pages/LiveTestingPage'),
   bugs: () => import('./pages/BugsPage'),
   reports: () => import('./pages/ReportsPage'),
+  play: () => import('./pages/PlayTestingPage'),
 };
 const SystemPage = lazy(() => pages.system().then((m) => ({ default: m.SystemPage })));
 const DevicesPage = lazy(() => pages.devices().then((m) => ({ default: m.DevicesPage })));
@@ -45,6 +47,7 @@ const DevPage = lazy(() => pages.dev().then((m) => ({ default: m.DevPage })));
 const LiveTestingPage = lazy(() => pages.live().then((m) => ({ default: m.LiveTestingPage })));
 const BugsPage = lazy(() => pages.bugs().then((m) => ({ default: m.BugsPage })));
 const ReportsPage = lazy(() => pages.reports().then((m) => ({ default: m.ReportsPage })));
+const PlayTestingPage = lazy(() => pages.play().then((m) => ({ default: m.PlayTestingPage })));
 /** After the first page is up, fetch the other pages' code in the background so switching never shows "Loading page…". */
 function usePreloadPages() {
   useEffect(() => {
@@ -71,6 +74,7 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
       { id: 'live', label: 'Live Testing', icon: <LuActivity />, ready: true },
       { id: 'bugs', label: 'Bug Reports', icon: <LuBug />, ready: true },
       { id: 'reports', label: 'Reports', icon: <LuFileChartColumn />, ready: true },
+      { id: 'play', label: 'Closed testing', icon: <LuUsers />, ready: true },
     ],
   },
   { label: 'Settings', items: [{ id: 'ai', label: 'AI (Gemini)', icon: <LuBot />, ready: true }] },
@@ -200,6 +204,7 @@ export function App() {
             {page === 'live' && <LiveTestingPage live={live} />}
             {page === 'bugs' && <BugsPage />}
             {page === 'reports' && <ReportsPage />}
+            {page === 'play' && <PlayTestingPage />}
           </Suspense>
         </Box>
       </Box>
