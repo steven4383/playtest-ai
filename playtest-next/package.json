@@ -3,10 +3,14 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 3000",
+    "dev": "next dev -H 127.0.0.1 -p 4300",
     "build": "next build",
-    "start": "next start -H 127.0.0.1 -p 3000",
-    "typecheck": "tsc --noEmit"
+    "start": "next start -H 127.0.0.1 -p 4300",
+    "typecheck": "tsc --noEmit",
+    "start:bg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/start-playtest.ps1 -Open",
+    "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/stop-playtest.ps1",
+    "autostart:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-autostart.ps1",
+    "autostart:remove": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-autostart.ps1"
   },
   "dependencies": {
     "@chakra-ui/react": "^3.38.0",

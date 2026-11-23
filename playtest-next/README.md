@@ -16,13 +16,29 @@ go back at any time.
 
 ```bash
 npm install
-npm run dev          # http://127.0.0.1:3000 — hot reload while you change code
+npm run dev          # http://127.0.0.1:4300 — hot reload while you change code
 # or, faster day to day:
 npm run build
-npm start            # http://127.0.0.1:3000
+npm start            # http://127.0.0.1:4300
 ```
 
 Needs Node.js 22.13+ (it uses the built-in `node:sqlite`) and the Android SDK, like before.
+
+### Without VS Code (starts with Windows)
+
+```powershell
+npm run autostart:install   # log-on task + Desktop/Start Menu shortcuts "PlayTest AI" and "Stop PlayTest AI"
+npm run autostart:remove    # undo
+npm run start:bg            # start in the background now (builds first if the code changed) and open the browser
+npm run stop                # stop the background server
+```
+
+The log-on task runs `scripts/windows/start-playtest.ps1` 30 s after you sign in: no window, your normal user rights,
+production mode. It rebuilds automatically when the code changed since the last build. Logs: `logs/playtest.log`
+(server), `logs/launcher.log` (starts/stops), `logs/build.log`.
+
+A Docker container is not used on purpose: on Windows it could not start your emulators (WHPX), see USB phones, or
+measure your PC's RAM — PlayTest needs to run on the PC itself.
 
 The server only listens on **127.0.0.1**. The API can install apps, run shell commands on devices and start
 emulators, so it must not be reachable from your network. It also refuses write requests from other websites.
@@ -30,7 +46,7 @@ emulators, so it must not be reachable from your network. It also refuses write 
 ## Settings and data
 
 - **`.env`** — same settings as `backend/.env` (copied over). `PORT`/`HOST` are not used any more: the port is set in
-  `package.json` (`-p 3000`). Settings changed in the dashboard (AVD folder, RAM saver…) are written here.
+  `package.json` (`-p 4300`). Settings changed in the dashboard (AVD folder, RAM saver…) are written here.
 - **`playtest_ai.db`** and **`storage/`** — your device profiles, test runs, bugs, APKs, screenshots and logs. They
   were copied from `backend/`, and the file paths stored in the database were moved to this folder.
 
