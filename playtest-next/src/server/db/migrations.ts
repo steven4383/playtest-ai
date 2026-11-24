@@ -210,4 +210,92 @@ export const migrations: { version: number; name: string; sql: string }[] = [
       CREATE INDEX idx_play_testers_pkg ON play_testers(package_name);
     `,
   },
+  {
+    version: 5,
+    name: 'projects_and_releases',
+    sql: `
+      ALTER TABLE projects ADD COLUMN color TEXT;
+      ALTER TABLE projects ADD COLUMN updated_at TEXT;
+      CREATE TABLE project_components (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL,
+        framework TEXT,
+        package_name TEXT,
+        repo_url TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_components_project ON project_components(project_id);
+      CREATE TABLE play_configs (
+        component_id TEXT PRIMARY KEY REFERENCES project_components(id) ON DELETE CASCADE,
+        package_name TEXT NOT NULL,
+        service_account_file TEXT,
+        service_account_email TEXT,
+        default_track TEXT NOT NULL DEFAULT 'internal',
+        release_status TEXT NOT NULL DEFAULT 'completed',
+        user_fraction REAL,
+        bump TEXT NOT NULL DEFAULT 'patch',
+        require_clean INTEGER NOT NULL DEFAULT 1,
+        git_commit INTEGER NOT NULL DEFAULT 1,
+        git_tag INTEGER NOT NULL DEFAULT 1,
+        git_push INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE releases (
+        id TEXT PRIMARY KEY,
+        component_id TEXT NOT NULL REFERENCES project_components(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL,
+        track TEXT,
+        status TEXT NOT NULL,
+        version_before TEXT,
+        version_after TEXT,
+        version_code INTEGER,
+        release_status TEXT,
+        user_fraction REAL,
+        notes TEXT,
+        aab_path TEXT,
+        aab_bytes INTEGER,
+        steps TEXT,
+        warning TEXT,
+        error TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE INDEX idx_releases_component ON releases(component_id, started_at);
+      CREATE TABLE project_notes (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        component_id TEXT REFERENCES project_components(id) ON DELETE SET NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT,
+        status TEXT NOT NULL DEFAULT 'todo',
+        priority TEXT NOT NULL DEFAULT 'medium',
+        due_date TEXT,
+        position REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_notes_project ON project_notes(project_id, status);
+    `,
+  },
+  {
+    version: 6,
+    name: 'notebook',
+    sql: `
+      CREATE TABLE notebook (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        pinned INTEGER NOT NULL DEFAULT 0,
+        color TEXT,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_notebook_updated ON notebook(pinned, updated_at);
+    `,
+  },
 ];

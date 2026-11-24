@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-/** The dashboard opens on System & capacity. */
+/** The dashboard opens on Projects. */
 export default function Home() {
-  redirect('/system');
+  redirect('/projects');
 }

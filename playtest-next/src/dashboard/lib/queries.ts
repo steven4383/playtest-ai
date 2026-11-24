@@ -162,6 +162,11 @@ export function useLiveCacheSync(live: Live) {
           void qc.invalidateQueries({ queryKey: ['reports'] });
         }
         if (e.event === 'apk_uploaded') void qc.invalidateQueries({ queryKey: qk.apks });
+        if (e.event === 'release_update') {
+          if (e.component_id) void qc.invalidateQueries({ queryKey: ['projects', 'releases', e.component_id] });
+          void qc.invalidateQueries({ queryKey: ['projects', 'list'] });
+          if (e.project_id && e.status !== 'running') void qc.invalidateQueries({ queryKey: ['projects', 'detail', e.project_id] });
+        }
         if (e.event === 'sdk_job' && e.job) {
           const job = e.job;
           qc.setQueryData<SdkJob[]>(qk.sdkJobs, (list = []) => [job, ...list.filter((j) => j.id !== job.id)].sort((a, b) => b.created_at.localeCompare(a.created_at)));

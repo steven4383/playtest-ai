@@ -43,6 +43,44 @@ measure your PC's RAM — PlayTest needs to run on the PC itself.
 The server only listens on **127.0.0.1**. The API can install apps, run shell commands on devices and start
 emulators, so it must not be reachable from your network. It also refuses write requests from other websites.
 
+## Workspaces
+
+The left rail switches between five workspaces; the column next to it lists that workspace's pages (hide it with «).
+Each workspace reopens the page you used last in it.
+
+| Workspace | Pages |
+|---|---|
+| **Projects** | All projects, recent projects, each project's Overview / Development / Deployment / Maintenance |
+| **Developer** | Workbench (screen, Flutter, logcat, apps…), Device Manager, APK Manager |
+| **Testing** | Test runs, Live testing, Bug reports, Reports |
+| **Deployment** | Releases (every app's Release button), Closed testing |
+| **Maintenance** | Notes, Tasks (open items of all projects), System, AI (Gemini) |
+
+**Notes** is a notebook with Markdown (headings, lists, `code`, links) and clickable `- [ ]` checklists; notes save
+while you type and can be pinned, colored and linked to a project. **Quick note** (header button or **Alt+N** on any
+page, Ctrl+Enter to save) captures a thought without leaving what you are doing.
+
+## Projects: Development → Deployment → Maintenance
+
+**Projects** (top of the sidebar) groups everything you build. A project has parts — a Flutter app, a web panel, a
+backend — each a folder on this PC (add an existing folder, or clone from GitHub).
+
+- **Development** — git status of every part (branch, uncommitted files, recent commits with links to GitHub),
+  shortcuts to the Flutter tools and test runs.
+- **Deployment** — one-click release of the Flutter app to Google Play:
+  Checks → version bump in `pubspec.yaml` → `flutter build appbundle --release` → signing check (refuses debug-signed
+  bundles) → upload to a Play track (internal / closed / open / production, staged rollout, release notes) →
+  `git commit` + tag (+ push). **Dry run** does everything but publish (Google validates, then it is discarded) and
+  puts `pubspec.yaml` back; **Build only** just makes the signed bundle. If anything fails before the upload,
+  `pubspec.yaml` is restored. The build number always goes above the highest one already on Play.
+- **Maintenance** — your requirements, tasks, bugs and ideas on a board (To do / Doing / Done, drag and drop), plus notes.
+
+One-time Google Play setup (the Deployment tab shows these steps with links): enable the *Google Play Android
+Developer API* in Google Cloud, create a service account and download its JSON key, invite the service account in
+Play Console → Users and permissions with release rights for the app, then add the key in PlayTest. The key is stored
+in `storage/secrets` and never sent back to the browser. Google requires the very first bundle of a new app to be
+uploaded by hand in Play Console.
+
 ## Settings and data
 
 - **`.env`** — same settings as `backend/.env` (copied over). `PORT`/`HOST` are not used any more: the port is set in

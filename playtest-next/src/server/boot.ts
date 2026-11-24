@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { config } from './config';
-import { migrate } from './db';
+import { db, migrate } from './db';
 import { llmStatus } from './llm';
 import { bugRepo } from './services/bugs';
 import { campaignRepo } from './services/campaigns';
@@ -10,6 +10,7 @@ import { campaignRunner } from './automation/campaign-runner';
 import { devkit } from './automation/devkit';
 import { emulatorManager } from './automation/emulator';
 import { flutterRunner } from './automation/flutter-run';
+import { releaseRunner } from './automation/release-runner';
 
 /**
  * Starts the background side of PlayTest once per server process (what backend/src/main.ts did): database
@@ -43,6 +44,8 @@ export function ensureBooted(): Promise<void> {
       const applied = migrate();
       if (applied) log(`Applied ${applied} database migration(s)`);
       fs.mkdirSync(config.STORAGE_DIR, { recursive: true });
+      const stale = db.prepare("UPDATE releases SET status = 'failed', error = 'Interrupted by a restart', finished_at = ? WHERE status = 'running'").run(new Date().toISOString()).changes;
+      if (stale) log(`Marked ${stale} release(s) interrupted by the last restart`);
       const interrupted = campaignRepo.recoverInterrupted();
       if (interrupted) log(`Marked ${interrupted} test run(s) interrupted by the last restart`);
       const backfilled = bugRepo.backfill();
@@ -69,6 +72,7 @@ export function ensureBooted(): Promise<void> {
       await campaignRunner.cancelAll().catch(() => {});
       await devkit.stopAll().catch(() => {});
       flutterRunner.stopAll();
+      releaseRunner.stopAll();
       await emulatorManager.stopAll().catch(() => {});
     };
     if (!st.signalsHooked) {

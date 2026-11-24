@@ -20,6 +20,10 @@ export interface LiveEvent {
   elapsed_s?: number;
   eta_s?: number | null;
   booted?: boolean;
+  /** release_update */
+  release_id?: string;
+  component_id?: string;
+  project_id?: string | null;
 }
 
 const HISTORY = 90; // 3 minutes at 2s
@@ -44,8 +48,8 @@ export function useLive() {
       setCapacity(d.capacity);
       setHistory((h) => (h.at(-1)?.ts === d.metrics.ts ? h : [...h, d.metrics].slice(-HISTORY)));
     });
-    const noisy = new Set(['sdk_job', 'execution_update', 'campaign_update', 'boot_progress']);
-    for (const name of ['device_starting', 'device_ready', 'device_stopped', 'device_error', 'boot_progress', 'apk_uploaded', 'sdk_job', 'campaign_update', 'execution_update', 'bug_found']) {
+    const noisy = new Set(['sdk_job', 'execution_update', 'campaign_update', 'boot_progress', 'release_update']);
+    for (const name of ['device_starting', 'device_ready', 'device_stopped', 'device_error', 'boot_progress', 'apk_uploaded', 'sdk_job', 'campaign_update', 'execution_update', 'bug_found', 'release_update']) {
       es.addEventListener(name, (msg) => {
         const e: LiveEvent = { event: name, ...JSON.parse((msg as MessageEvent).data) };
         // Progress events fire often — deliver to listeners but keep them out of the event history

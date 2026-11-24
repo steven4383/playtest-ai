@@ -13,6 +13,7 @@ export type AppEvent =
   | { event: 'sdk_job'; data: { job: unknown } }
   | { event: 'campaign_update'; data: { campaign_id: string; status: string; summary: unknown; paused?: boolean } }
   | { event: 'bug_found'; data: { campaign_id: string; execution_id: string } }
+  | { event: 'release_update'; data: { release_id: string; component_id: string; project_id: string | null; status: string } }
   | { event: 'execution_update'; data: { campaign_id: string; execution_id: string; status: string; step?: string } };
 
 class Bus extends EventEmitter {
