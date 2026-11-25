@@ -24,7 +24,9 @@ import {
   LuPlay,
   LuRocket,
   LuSmartphone,
+  LuSparkles,
   LuSun,
+  LuTrophy,
   LuUsers,
   LuWrench,
 } from 'react-icons/lu';
@@ -54,7 +56,10 @@ export const WORKSPACES: Workspace[] = [
     icon: <LuFolderKanban />,
     palette: 'blue',
     text: 'Everything you build',
-    pages: [{ id: 'projects', label: 'All projects', icon: <LuFolderKanban />, hint: 'Parts, git, releases, board' }],
+    pages: [
+      { id: 'projects', label: 'All projects', icon: <LuFolderKanban />, hint: 'Parts, git, releases, board' },
+      { id: 'timeline', label: 'Project timeline', icon: <LuTrophy />, hint: 'Milestones & releases' },
+    ],
   },
   {
     id: 'developer',
@@ -97,8 +102,9 @@ export const WORKSPACES: Workspace[] = [
     label: 'Maintenance',
     icon: <LuWrench />,
     palette: 'green',
-    text: 'Notes, tasks, system',
+    text: 'Personal space, notes, tasks, system',
     pages: [
+      { id: 'personal', label: 'Personal space', icon: <LuSparkles />, hint: 'Your goals and achievements' },
       { id: 'notes', label: 'Notes', icon: <LuNotebook />, hint: 'Notebook and checklists' },
       { id: 'tasks', label: 'Tasks', icon: <LuListChecks />, hint: 'Open items of all projects' },
       { id: 'system', label: 'System', icon: <LuGauge />, hint: 'PC capacity and metrics' },

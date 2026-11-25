@@ -12,6 +12,7 @@ import { llmRoutes } from './api/llm';
 import { playRoutes } from './api/play';
 import { projectRoutes } from './api/projects';
 import { notebookRoutes } from './api/notebook';
+import { workspaceRoutes } from './api/workspace';
 import { sdkRoutes } from './api/sdk';
 import { systemRoutes } from './api/system';
 
@@ -19,8 +20,8 @@ export const API_PREFIX = '/api/v1';
 
 const router = createRouter(API_PREFIX);
 const registered = (async () => {
-  router.app.get('/health', async () => ({ status: 'ok', version: '0.2.0', uptime_s: Math.round(process.uptime()) }));
-  for (const routes of [systemRoutes, deviceRoutes, apkRoutes, sdkRoutes, llmRoutes, campaignRoutes, bugRoutes, devtoolsRoutes, devkitRoutes, flutterRoutes, playRoutes, projectRoutes, notebookRoutes]) {
+  router.app.get('/health', async () => ({ status: 'ok', version: '0.3.0', uptime_s: Math.round(process.uptime()) }));
+  for (const routes of [systemRoutes, deviceRoutes, apkRoutes, sdkRoutes, llmRoutes, campaignRoutes, bugRoutes, devtoolsRoutes, devkitRoutes, flutterRoutes, playRoutes, projectRoutes, notebookRoutes, workspaceRoutes]) {
     await routes(router.app);
   }
 })();

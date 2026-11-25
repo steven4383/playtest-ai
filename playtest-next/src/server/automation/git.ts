@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { github } from '../services/github';
 import { run } from './sdk';
 
 /**
@@ -74,14 +75,15 @@ export async function cloneRepo(url: string, destInput: string, onLine?: (l: str
   if (!path.isAbsolute(destInput.trim())) throw bad('Use a full folder path, e.g. M:\\projects\\my_app');
   if (/[\0\r\n"<>|]/.test(dest)) throw bad('Invalid characters in the folder path');
   if (fs.existsSync(dest)) throw bad(`${dest} already exists — pick a new folder, or add the existing folder instead`);
-  if (!fs.existsSync(path.dirname(dest))) throw bad(`Parent folder ${path.dirname(dest)} does not exist`);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
   onLine?.(`git clone ${u} ${dest}`);
-  const r = await run('git', ['clone', '--', u, dest], 20 * 60_000, ENV);
+  // With a connected GitHub token, private repositories clone without a login prompt (token never stored in the repo).
+  const r = await run('git', ['clone', '--', u, dest], 20 * 60_000, { ...ENV, ...github.cloneEnv(u) });
   if (!r.ok) {
     const msg = `${r.stderr || r.error || ''}`.trim();
     throw bad(
       /Authentication|could not read Username|terminal prompts disabled/i.test(msg)
-        ? 'Git could not sign in to this repository. Clone it once in a terminal (Git Credential Manager remembers the login), then add the folder here.'
+        ? 'Git could not sign in to this repository. Connect GitHub with a token (Projects → Add part → My GitHub repos), or clone it once in a terminal and add the folder.'
         : `git clone failed: ${msg.split(/\r?\n/).slice(-3).join(' ')}`,
       502,
     );

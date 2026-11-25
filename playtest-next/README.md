@@ -54,7 +54,24 @@ Each workspace reopens the page you used last in it.
 | **Developer** | Workbench (screen, Flutter, logcat, apps…), Device Manager, APK Manager |
 | **Testing** | Test runs, Live testing, Bug reports, Reports |
 | **Deployment** | Releases (every app's Release button), Closed testing |
-| **Maintenance** | Notes, Tasks (open items of all projects), System, AI (Gemini) |
+| **Maintenance** | Personal space, Notes, Tasks (open items of all projects), System, AI (Gemini) |
+
+**Personal space** (Maintenance) is yours alone, separate from projects: goals, education, career, health and important
+days. It is a cinematic page themed by your own **scenes** — character art or wallpapers you add (button or drag & drop
+onto the banner; stored only in `storage/personal/backdrops`). The page takes its glow color from the active image; in
+*Manage scenes* you can rename, change the color and choose which part of the image stays in view. Two views:
+**Chronicle** (a story line: achievements → NOW → quests ahead → someday, with year chapters, D-countdowns for
+important days and filters) and **Status window** (the game-HUD: level, rank E→S, XP, quest log, achievements). A
+level-up moment plays when you rank up; all motion is off with "reduce motion".
+
+**Project timeline** (Projects workspace, and a tab in every project) holds project milestones (planning → completion)
+in the app's own look. Published Play releases appear on it by themselves. Personal and project levels are counted
+separately; a personal goal can be moved to a project from its edit dialog.
+
+**Folders and GitHub:** every path field has **Browse…** (in-app folder browser that marks Flutter apps and git repos,
+or the Windows folder dialog). *Add part → My GitHub repos* lists your repositories after you connect a fine-grained
+token once (stored in `.env` as `GITHUB_TOKEN`, sent only to GitHub and to git for a clone); clones go to
+`PROJECTS_DIR` by default.
 
 **Notes** is a notebook with Markdown (headings, lists, `code`, links) and clickable `- [ ]` checklists; notes save
 while you type and can be pinned, colored and linked to a project. **Quick note** (header button or **Alt+N** on any

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { FolderInput } from '../../components/FolderPicker';
 import NextLink from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { qk } from '../../lib/queries';
@@ -636,7 +637,7 @@ export function FlutterPanel({ device, flutter }: { device: AdbDevice | null; fl
               }}
             >
               <HStack gap="2">
-                <Input size="sm" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="Or paste a project folder, e.g. D:\work\my_app" fontFamily="mono" aria-label="Project folder" />
+                <FolderInput value={custom} onChange={setCustom} placeholder="Or choose a project folder…" title="Choose a Flutter project folder" />
                 <Button size="sm" type="submit" variant="outline" disabled={custom.trim().length < 3}>
                   <LuPlus /> Add
                 </Button>

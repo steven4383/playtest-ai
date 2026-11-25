@@ -39,6 +39,10 @@ const schema = z.object({
   /** Folder for new AVD data (e.g. M:\\Android\\avd). Empty = avdmanager default (~/.android/avd). */
   AVD_STORAGE_DIR: z.string().optional().default(''),
   SYSTEM_IMAGES_DIR: z.string().optional().default(''),
+  /** GitHub token (fine-grained, read-only is enough) to list and clone your repositories. Never sent to the browser. */
+  GITHUB_TOKEN: z.string().optional().default(''),
+  /** Folder new clones go into by default (e.g. M:\\projects). */
+  PROJECTS_DIR: z.string().optional().default(''),
   LLM_PROVIDER: z.preprocess((v) => v || undefined, z.enum(['gemini']).default('gemini')),
   GEMINI_API_KEY: z.string().optional().default(''),
   GEMINI_MODEL: z.string().optional().transform((v) => v || DEFAULT_GEMINI_MODEL),

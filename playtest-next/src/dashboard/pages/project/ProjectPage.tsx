@@ -4,7 +4,7 @@ import NextLink from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { Box, Button, CloseButton, Dialog, Field, Flex, HStack, IconButton, Input, Portal, SimpleGrid, Stack, Text, Textarea, chakra } from '@chakra-ui/react';
-import { LuArrowLeft, LuExternalLink, LuFolderKanban, LuLayoutDashboard, LuPencil, LuTrash2 } from 'react-icons/lu';
+import { LuArrowLeft, LuExternalLink, LuFolderKanban, LuLayoutDashboard, LuPencil, LuTrash2, LuTrophy } from 'react-icons/lu';
 import { api } from '../../lib/api';
 import { ago, KIND_LABEL, pk, useNotes, useProject, trackLabel, type ProjectComponent } from '../../lib/projects';
 import { Badge, Card, Empty, Loading, Notice } from '../../components/ui';
@@ -14,9 +14,10 @@ import { AddPartForm, frameworkLabel } from './AddPart';
 import { DevelopmentTab } from './DevelopmentTab';
 import { DeploymentTab } from './DeploymentTab';
 import { MaintenanceTab } from './MaintenanceTab';
+import { ProjectTimeline } from '../../components/timeline/TimelineView';
 import { RELEASE_TONE } from './ReleaseView';
 
-type Tab = 'overview' | 'development' | 'deployment' | 'maintenance';
+type Tab = 'overview' | 'development' | 'deployment' | 'maintenance' | 'timeline';
 const tabKey = (id: string) => `pt-project-tab:${id}`;
 
 function EditProject({ open, project, onClose, onSaved }: { open: boolean; project: { id: string; name: string; description: string | null; color: string | null }; onClose: () => void; onSaved: () => void }) {
@@ -213,8 +214,8 @@ export function ProjectPage() {
       </Box>
 
       {/* Overview + the three workflow stages as big tabs */}
-      <SimpleGrid columns={{ base: 2, md: 4 }} gap="2" role="tablist" aria-label="Project sections">
-        {[{ id: 'overview', label: 'Overview', icon: <LuLayoutDashboard />, palette: 'gray', text: `${parts.length} part${parts.length === 1 ? '' : 's'}` }, ...STAGES.map((s) => ({ ...s, text: stageInfo[s.id] }))].map((s) => {
+      <SimpleGrid columns={{ base: 2, md: 3, xl: 5 }} gap="2" role="tablist" aria-label="Project sections">
+        {[{ id: 'overview', label: 'Overview', icon: <LuLayoutDashboard />, palette: 'gray', text: `${parts.length} part${parts.length === 1 ? '' : 's'}` }, ...STAGES.map((s) => ({ ...s, text: stageInfo[s.id] })), { id: 'timeline', label: 'Timeline', icon: <LuTrophy />, palette: 'yellow', text: 'Milestones & releases' }].map((s) => {
           const active = tab === s.id;
           return (
             <chakra.button
@@ -296,6 +297,7 @@ export function ProjectPage() {
       {tab === 'development' && <DevelopmentTab projectId={p.id} components={parts} />}
       {tab === 'deployment' && <DeploymentTab components={parts} onChanged={() => void reload()} />}
       {tab === 'maintenance' && <MaintenanceTab projectId={p.id} parts={parts} />}
+      {tab === 'timeline' && <ProjectTimeline projectId={p.id} />}
 
       <EditProject open={editing} project={p} onClose={() => setEditing(false)} onSaved={() => void Promise.all([reload(), qc.invalidateQueries({ queryKey: pk.list })])} />
     </Stack>
